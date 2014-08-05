@@ -400,6 +400,7 @@ class Abe:
         body += abe.search_form(page)
 
         count = get_int_param(page, 'count') or 20
+        count = min(count, 100)
         hi = get_int_param(page, 'hi')
         orig_hi = hi
 
@@ -450,7 +451,7 @@ class Abe:
         if hi != count - 1:
             nav[-1] = ['<a href="', basename, '?hi=', str(count - 1),
                         '&amp;count=', str(count), '">', nav[-1], '</a>']
-        for c in (20, 50, 100, 500, 2016):
+        for c in (20, 50, 100):
             nav += [' ']
             if c != count:
                 nav += ['<a href="', basename, '?count=', str(c)]
@@ -471,8 +472,7 @@ class Abe:
                  '<th>Difficulty</th><th>Outstanding</th>',
                  '<th>Average Age</th><th>Chain Age</th>',
                  '<th>% ',
-                 '<a href="https://en.bitcoin.it/wiki/Bitcoin_Days_Destroyed">',
-                 'CoinDD</a></th>',
+                 'CoinDD</th>',
                  ['<th>Satoshi-seconds</th>',
                   '<th>Total ss</th>']
                  if extra else '',
