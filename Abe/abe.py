@@ -265,6 +265,7 @@ class Abe:
         abe.store.rollback()  # Close implicitly opened transaction.
 
         start_response(status, [('Content-type', page['content_type']),
+                                ('Access-Control-Allow-Origin', '*',
                                 ('Cache-Control', 'max-age=30')])
 
         tvars['title'] = flatten(page['title'])
