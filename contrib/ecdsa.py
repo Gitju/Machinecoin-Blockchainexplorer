@@ -318,13 +318,13 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
             ]
 
         body += ['</p>\n',
-                 '<a name="inputs"><h3>Inputs</h3></a>\n<table>\n',
+                 '<a name="inputs"><h3>Inputs</h3></a>\n<table class="table">\n',
                  '<tr><th>Index</th><th>Previous output</th><th>Amount</th>',
                  '<th>From address</th><th>Comment</th></tr>\n']
         for row in in_rows:
             page['body'] += row_to_html(row, 'i', 'o', 'Generation' if is_coinbase else 'Unknown')
         body += ['</table>\n',
-                 '<a name="outputs"><h3>Outputs</h3></a>\n<table>\n',
+                 '<a name="outputs"><h3>Outputs</h3></a>\n<table class="table">\n',
                  '<tr><th>Index</th><th>Redeemed at</th><th>Amount</th>',
                  '<th>To address</th><th>Comment</th></tr>\n']
         for row in out_rows:
@@ -534,7 +534,7 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
 
         body += ['</p>\n'
                  '<h3>Transactions</h3>\n'
-                 '<table>\n<tr><th>Transaction</th><th>Block</th>'
+                 '<table class="table">\n<tr><th>Transaction</th><th>Block</th>'
                  '<th>Approx. Time</th><th>Amount</th><th>Balance</th>'
                  '<th>Comment</th>'
                  '</tr>\n']
@@ -582,7 +582,7 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
     def handle_reports(abe, page):
         page['title'] =  'Fraud reports'
         page['body'] += [ 'List of transactions that have been reported as fraudulent.', '<br/><br/>']
-        page['body'] += [ '<table><tr><th>name</th><th>transaction</th></tr>']
+        page['body'] += [ '<table class="table"><tr><th>name</th><th>transaction</th></tr>']
         for item in abe.reports:
             link = '<a href="tx/' + item['tx_hash'] + '">'+ item['tx_hash'] + '</a>'
             page['body'] += ['<tr><td>'+item['name']+'</td><td>'+link+'</td></tr>']
@@ -602,7 +602,7 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
             
             page['body'] += [ '<h3>Annotated addresses.</h3>']
             rows = abe.store.selectall("""select text, address from addr_comments limit 100""" )
-            page['body'] += [ '<table>']
+            page['body'] += [ '<table class="table">']
             page['body'] += [ '<tr><th>Address</th><th>Comment</th></tr>']
             for row in rows:
                 link = '<a href="address/' + row[1]+ '">'+ row[1] + '</a>'
@@ -613,7 +613,7 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
             page['body'] += [ '<h3>Annotated transactions.</h3>']
             rows = abe.store.selectall("""select tx.tx_id, tx.tx_hash, comments.c_text 
                                           from comments left join tx on tx.tx_id = comments.c_tx where c_sig != '' limit 100""" )
-            page['body'] += [ '<table>']
+            page['body'] += [ '<table class="table">']
             page['body'] += [ '<tr><th>Transaction</th><th>Comment</th></tr>']
             for row in rows:
                 link = '<a href="tx/' + row[1]+ '">'+ row[1] + '</a>'
@@ -1041,13 +1041,13 @@ Once the threshold is reached, the content is displayed in place of the donation
 
         text = "Donate"
         link_text  = "<a style=\"text-decoration:none;color:"+textcolor+"\" href=\"javascript:alert('Donate to this Bitcoin address:\\n"+address+"');\">"+text+"</a>"
-        ret = """<table style="border-width:0px;"><tr><td>
- <table style="%s width:%dpx;">
+        ret = """<table class="table"><tr><td>
+ <table class="table">
   <tr><td style="%s width:%dpx; text-align:center;">%s</td><td></td></tr>
  </table>
 </td>
 <td>
- <table style="%s width:100px;">
+ <table class="table">
    <tr><td style="%s">%s</td></tr>
  </table>
 </td></tr></table>"""%(outer_style,leftwidth,left_style,progress,link_count,outer_style,right_style,link_text)

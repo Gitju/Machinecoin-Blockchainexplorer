@@ -62,26 +62,96 @@ DEFAULT_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="stylesheet" type="text/css"
-     href="%(dotdot)s%(STATIC_PATH)sabe.css" />
-    <link rel="shortcut icon" href="%(dotdot)s%(STATIC_PATH)sfavicon.ico" />
     <title>%(title)s</title>
+    <!-- Basic website information and search engine optimization -->
+    <meta charset="utf-8">
+    <meta content="IE=edge" http-equiv="X-UA-Compatible">
+    <meta content=
+    "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    name="viewport">
+    <meta content=
+    "Machinecoin is a free and decentralized peer-to-peer cryptocurrency that is completely open source and uses scrypt as a proof-of-work algorithm. Machinecoin operates with no central authority or any banks; managing transactions and the issuing of Machinecoins is carried out collectively by the network itself."
+    name="description">
+    <meta content="Jürgen Scholz" name="author">
+    <meta content="index, follow" name="robots">
+    <!-- Include Bootstrap CSS -->
+    <link href="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/css/bootstrap.min.css" rel=
+    "stylesheet">
+    <!-- Include Font Awesome CSS -->
+    <link href="http://maxcdn.bootstrapcdn.com/font-awesome/4.2.0/css/font-awesome.min.css" rel=
+    "stylesheet">
+    <!-- Include custom CSS -->
+    <link href="%(dotdot)s%(STATIC_PATH)sstyles.css" rel="stylesheet">
+    <!-- Include Modernizr HTML5/CSS3 detection in front of any other javascript -->
+    <script src="http://cdnjs.cloudflare.com/ajax/libs/modernizr/2.8.3/modernizr.min.js"></script>
 </head>
-<body>
-    <h1><a href="%(dotdot)s%(HOMEPAGE)s"><img
-     src="%(dotdot)s%(STATIC_PATH)slogo32.png" alt="Abe logo" /></a> %(h1)s
-    </h1>
-    %(body)s
-    <p><a href="%(dotdot)sq">API</a> (machine-readable pages)</p>
-    <p style="font-size: smaller">
-        <span style="font-style: italic">
-            Powered by <a href="%(ABE_URL)s">%(APPNAME)s</a>
-        </span>
-        %(download)s
-        Tips appreciated!
-        <a href="%(dotdot)saddress/%(DONATIONS_BTC)s">BTC</a>
-        <a href="%(dotdot)saddress/%(DONATIONS_NMC)s">NMC</a>
-    </p>
+<body data-offset="60" data-spy="scroll" data-target=
+"#bs-example-navbar-collapse-1">
+	<nav class="navbar navbar-default navbar-fixed-top">
+		<div class="container">
+
+			<!-- Brand and toggle get grouped for better mobile display -->
+			<div class="navbar-header">
+				<button class="navbar-toggle collapsed" data-target=
+				"#bs-example-navbar-collapse-1" data-toggle="collapse" type=
+				"button"><span class="sr-only">Toggle navigation</span>
+				<span class="icon-bar"></span> <span class="icon-bar"></span>
+				<span class="icon-bar"></span> <span class=
+				"icon-bar"></span></button> <a class=
+				"navbar-brand">Machinecoin</a>
+			</div><!-- end navbar-header -->
+
+			<!-- Collect the nav links, forms, and other content for toggling -->
+			<div class="collapse navbar-collapse" id=
+			"bs-example-navbar-collapse-1">
+				<ul class="nav navbar-nav">
+					<li class="active">
+						<a href="#main">Home</a>
+					</li>
+				</ul><!-- end navbar-nav -->
+			</div><!-- end bs-example-navbar-collapse-1 -->
+		</div><!-- end container -->
+	</nav><!-- end nav -->
+	
+    <div class="container" id="main">
+        <div class="row" id="bigCallout">
+            <div class="col-md-12">
+				<h1><a href="%(dotdot)s%(HOMEPAGE)s"><img
+				 src="%(dotdot)s%(STATIC_PATH)slogo32.png" alt="Abe logo" /></a> %(h1)s
+				</h1>
+				%(body)s
+				<p><a href="%(dotdot)sq">API</a> (machine-readable pages)</p>
+				<p style="font-size: smaller">
+					<span style="font-style: italic">
+						Powered by <a href="%(ABE_URL)s">%(APPNAME)s</a>
+					</span>
+					%(download)s
+					Tips appreciated!
+					<a href="%(dotdot)saddress/%(DONATIONS_BTC)s">BTC</a>
+					<a href="%(dotdot)saddress/%(DONATIONS_NMC)s">NMC</a>
+				</p>
+			</div><!-- end col-md-12 -->
+		</div><!-- end row -->
+	</div><!-- end container -->
+    <footer>
+        <div class="container">
+            <div class="row" id="menuBottom">
+                <div class="col-sm-4"></div><!-- end col-sm-4 -->
+
+                <div class="col-sm-4"></div><!-- end col-sm-4 -->
+
+                <div class="col-sm-4">
+                    <h6>Copyright &copy; 2014 MachineCoin Project</h6>
+                </div><!-- end col-sm-2 -->
+            </div><!-- end row -->
+        </div><!-- end container -->
+    </footer>
+    <!-- jQuery -->
+    <script src="http://code.jquery.com/jquery-1.11.0.min.js"></script>
+    <!-- Bootstrap JS -->
+     <script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/js/bootstrap.min.js"></script> 
+     <!-- Custom JS -->
+     <script src="%(dotdot)s%(STATIC_PATH)sscript.js"></script>
 </body>
 </html>
 """
@@ -288,12 +358,12 @@ class Abe:
         body = page['body']
         body += [
             abe.search_form(page),
-            '<table>\n',
+            '<table class="table">\n',
             '<tr><th>Currency</th><th>Code</th><th>Block</th><th>Time</th>',
             '<th>Started</th><th>Age (days)</th><th>Coins Created</th>',
             '<th>Avg Coin Age</th><th>',
-            '% <a href="https://en.bitcoin.it/wiki/Bitcoin_Days_Destroyed">',
-            'CoinDD</a></th>',
+            '% ',
+            'CoinDD</th>',
             '</tr>\n']
         now = time.time() - EPOCH1970
 

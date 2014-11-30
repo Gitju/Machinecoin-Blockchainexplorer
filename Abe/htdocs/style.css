@@ -1,0 +1,55 @@
+/* ------------------------------------
+    Layout
+    ------------------------------------ */
+
+#menuBottom {
+	text-align: center;
+}
+
+footer {
+	background: #333;
+	color: #eee;
+	font-size: 11px;
+	padding: 20px;
+}
+
+/* ------------------------------------
+    Typographie
+    ------------------------------------ */
+
+body {
+	-webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+	position: relative;
+}
+
+
+ /* ------------------------------------
+    Navbar
+    ------------------------------------ */
+    
+
+ /* ------------------------------------
+    Global Styles
+    ------------------------------------ */
+
+
+ /* ------------------------------------
+    Media Queries
+    ------------------------------------ */
+
+/* Portrait & landscape phone */
+@media (max-width: 480px) {
+
+}
+
+/* Landscape phone to portrait tablet */
+@media (max-width: 768px) {
+
+}
+
+/* Large desktop */
+@media (min-width: 1200px) {
+
+}
