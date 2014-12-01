@@ -121,7 +121,7 @@ DEFAULT_TEMPLATE = """
                         </ul>
                     </li>
                 </ul>
-				<form action="search" class="navbar-form navbar-left" role="search">
+				<form action="/search" class="navbar-form navbar-left" role="search">
 					<div class="form-group">
 				  		<input type="text" name="q" class="form-control" placeholder="Search">
 					</div>
@@ -148,7 +148,7 @@ DEFAULT_TEMPLATE = """
 			<div class="container">
 				<div class="row" id="menuBottom">
 					<div class="col-sm-4">
-						<h6>Machinecoin Blockchain and <a href="%(dotdot)sq">Developer API</a> powered by <a href="%(ABE_URL)s">%(APPNAME)s</a>.</h6>
+						<h6>Machinecoin Blockchain <a href="%(dotdot)sq">API</a> powered by <a href="%(ABE_URL)s">%(APPNAME)s</a></h6>
 					</div><!-- end col-sm-4 -->
 						
 					<div class="col-sm-4">
