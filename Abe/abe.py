@@ -73,7 +73,6 @@ DEFAULT_TEMPLATE = """
     "Machinecoin is a free and decentralized peer-to-peer cryptocurrency that is completely open source and uses scrypt as a proof-of-work algorithm. Machinecoin operates with no central authority or any banks; managing transactions and the issuing of Machinecoins is carried out collectively by the network itself."
     name="description">
     <meta content="J&uuml;rgen Scholz" name="author">
-    <meta content="index, follow" name="robots">
     <!-- Include Bootstrap CSS -->
     <link href="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/css/bootstrap.min.css" rel=
     "stylesheet">
