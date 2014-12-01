@@ -62,7 +62,8 @@ DEFAULT_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>%(title)s</title>
+    <title>Machinecoin - free and decentralized peer-to-peer
+    cryptocurrency</title>
     <!-- Basic website information and search engine optimization -->
     <meta charset="utf-8">
     <meta content="IE=edge" http-equiv="X-UA-Compatible">
@@ -97,7 +98,7 @@ DEFAULT_TEMPLATE = """
 				<span class="icon-bar"></span> <span class="icon-bar"></span>
 				<span class="icon-bar"></span> <span class=
 				"icon-bar"></span></button> <a class=
-				"navbar-brand" href="%(dotdot)s%(HOMEPAGE)s#main">Machinecoin</a>
+				"navbar-brand" href="%(dotdot)s%(HOMEPAGE)s#main">Machinecoin Blockchain</a>
 			</div><!-- end navbar-header -->
 
 			<!-- Collect the nav links, forms, and other content for toggling -->
@@ -105,9 +106,27 @@ DEFAULT_TEMPLATE = """
 			"bs-example-navbar-collapse-1">
 				<ul class="nav navbar-nav">
 					<li class="active">
-						<a href="%(dotdot)s%(HOMEPAGE)s#main">Blockchain</a>
+						<a href="%(dotdot)s%(HOMEPAGE)s#main">Home</a>
 					</li>
 				</ul><!-- end navbar-nav -->
+                <ul class="nav navbar-nav pull-right">
+                    <li class="dropdown">
+                        <a class="dropdown-toggle" data-toggle="dropdown" href=
+                        "#">English <strong class="caret"></strong></a>
+
+                        <ul class="dropdown-menu">
+                            <li>
+                                <a href="#" tabindex="-1">English</a>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+				<form action="search" class="navbar-form navbar-left" role="search">
+					<div class="form-group">
+				  		<input type="text" name="q" class="form-control" placeholder="Search">
+					</div>
+					<button type="submit" class="btn btn-default">Submit</button>
+				</form>
 			</div><!-- end bs-example-navbar-collapse-1 -->
 		</div><!-- end container -->
 	</nav><!-- end nav -->
@@ -117,21 +136,23 @@ DEFAULT_TEMPLATE = """
             <div class="col-md-12">
 				%(body)s
 			</div><!-- end col-md-12 -->
-			<div class="col-md-12">
-				<a href="%(dotdot)sq">API</a> powered by <a href="%(ABE_URL)s">%(APPNAME)s</a>. 
-			</div><!-- end col-md-12 -->
 		</div><!-- end row -->
+        <div class="row" id="credits">
+			<div class="col-md-12">
+				 
+			</div><!-- end col-md-12 -->
+        </div><!-- end credits -->
 	</div><!-- end container -->
 	<nav class="navbar navbar-default navbar-fixed-bottom" role="navigation">
 		<footer>
 			<div class="container">
 				<div class="row" id="menuBottom">
 					<div class="col-sm-4">
-						
+						<h6>Machinecoin Blockchain and <a href="%(dotdot)sq">Developer API</a> powered by <a href="%(ABE_URL)s">%(APPNAME)s</a>.</h6>
 					</div><!-- end col-sm-4 -->
 						
 					<div class="col-sm-4">
-
+						
 					</div><!-- end col-sm-4 -->
 
 					<div class="col-sm-4">
@@ -1178,17 +1199,7 @@ class Abe:
 
     def search_form(abe, page):
         q = (page['params'].get('q') or [''])[0]
-        return [
-            '<p>Search by address, block number or hash, transaction or'
-            ' public key hash, or chain name: Address or hash search requires at least the first ',
-            HASH_PREFIX_MIN, ' characters.</p>\n'
-            '<form class="form-inline" role="form" action="', page['dotdot'], 'search"><p>\n'
-            '<div class="form-group">\n'
-            '<input type="text" class="form-control" name="q" id="q" size="64" value="', escape(q), '" />'
-            '</div>\n'
-            '<div class="form-group">\n'
-            '<button type="submit" class="btn btn-default">Search</button>\n'
-            '</div></form>\n']
+        return ['']
 
     def handle_search(abe, page):
         page['title'] = 'Search'
