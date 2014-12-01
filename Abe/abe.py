@@ -97,7 +97,7 @@ DEFAULT_TEMPLATE = """
 				<span class="icon-bar"></span> <span class="icon-bar"></span>
 				<span class="icon-bar"></span> <span class=
 				"icon-bar"></span></button> <a class=
-				"navbar-brand" href="%(dotdot)s%(HOMEPAGE)s">Machinecoin</a>
+				"navbar-brand" href="http://gitju.github.io/Machinecoin.org#main">Machinecoin</a>
 			</div><!-- end navbar-header -->
 
 			<!-- Collect the nav links, forms, and other content for toggling -->
@@ -105,7 +105,7 @@ DEFAULT_TEMPLATE = """
 			"bs-example-navbar-collapse-1">
 				<ul class="nav navbar-nav">
 					<li class="active">
-						<a href="%(dotdot)s%(HOMEPAGE)s">Home</a>
+						<a href="%(dotdot)s%(HOMEPAGE)s#main">Blockexplorer</a>
 					</li>
 				</ul><!-- end navbar-nav -->
 			</div><!-- end bs-example-navbar-collapse-1 -->
