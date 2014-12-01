@@ -318,19 +318,19 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
             ]
 
         body += ['</p>\n',
-                 '<a name="inputs"><h3>Inputs</h3></a>\n<table class="table table-bordered table-hover">\n',
+                 '<a name="inputs"><h3>Inputs</h3></a>\n<div class="table-responsive"><table class="table table-bordered table-hover">\n',
                  '<tr><th>Index</th><th>Previous output</th><th>Amount</th>',
                  '<th>From address</th><th>Comment</th></tr>\n']
         for row in in_rows:
             page['body'] += row_to_html(row, 'i', 'o', 'Generation' if is_coinbase else 'Unknown')
-        body += ['</table>\n',
-                 '<a name="outputs"><h3>Outputs</h3></a>\n<table class="table table-bordered table-hover">\n',
+        body += ['</table></div>\n',
+                 '<a name="outputs"><h3>Outputs</h3></a>\n<div class="table-responsive"><table class="table table-bordered table-hover">\n',
                  '<tr><th>Index</th><th>Redeemed at</th><th>Amount</th>',
                  '<th>To address</th><th>Comment</th></tr>\n']
         for row in out_rows:
             page['body'] += row_to_html(row, 'o', 'i', 'Not yet redeemed')
 
-        body += ['</table>\n']
+        body += ['</table></div>\n']
 
 
 
@@ -534,7 +534,7 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
 
         body += ['</p>\n'
                  '<h3>Transactions</h3>\n'
-                 '<table class="table table-bordered table-hover">\n<tr><th>Transaction</th><th>Block</th>'
+                 '<div class="table-responsive"><table class="table table-bordered table-hover">\n<tr><th>Transaction</th><th>Block</th>'
                  '<th>Approx. Time</th><th>Amount</th><th>Balance</th>'
                  '<th>Comment</th>'
                  '</tr>\n']
@@ -561,7 +561,7 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
                      format_satoshis(balance[elt['chain_id']], chain),
                      '</td><td>', comment,
                      '</td></tr>\n']
-        body += ['</table>\n']
+        body += ['</table></div>\n']
 
 
     def search_form(abe, page):
@@ -582,11 +582,11 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
     def handle_reports(abe, page):
         page['title'] =  'Fraud reports'
         page['body'] += [ 'List of transactions that have been reported as fraudulent.', '<br/><br/>']
-        page['body'] += [ '<table class="table table-bordered table-hover"><tr><th>name</th><th>transaction</th></tr>']
+        page['body'] += [ '<div class="table-responsive"><table class="table table-bordered table-hover"><tr><th>name</th><th>transaction</th></tr>']
         for item in abe.reports:
             link = '<a href="tx/' + item['tx_hash'] + '">'+ item['tx_hash'] + '</a>'
             page['body'] += ['<tr><td>'+item['name']+'</td><td>'+link+'</td></tr>']
-        page['body'] += [ '</table>']
+        page['body'] += [ '</table></div>']
 
     def handle_annotate(abe, page):
         tx_hash = (page['params'].get('tx') or [''])[0]
@@ -602,23 +602,23 @@ This site is powered by <span style="font-style: italic"> <a href="https://githu
             
             page['body'] += [ '<h3>Annotated addresses.</h3>']
             rows = abe.store.selectall("""select text, address from addr_comments limit 100""" )
-            page['body'] += [ '<table class="table table-bordered table-hover">']
+            page['body'] += [ '<div class="table-responsive"><table class="table table-bordered table-hover">']
             page['body'] += [ '<tr><th>Address</th><th>Comment</th></tr>']
             for row in rows:
                 link = '<a href="address/' + row[1]+ '">'+ row[1] + '</a>'
                 page['body'] += ['<tr><td>'+link+'</td><td>'+row[0]+'</td></tr>']
-            page['body'] += [ '</table>']
+            page['body'] += [ '</table></div>']
 
 
             page['body'] += [ '<h3>Annotated transactions.</h3>']
             rows = abe.store.selectall("""select tx.tx_id, tx.tx_hash, comments.c_text 
                                           from comments left join tx on tx.tx_id = comments.c_tx where c_sig != '' limit 100""" )
-            page['body'] += [ '<table class="table table-bordered table-hover">']
+            page['body'] += [ '<div class="table-responsive"><table class="table table-bordered table-hover">']
             page['body'] += [ '<tr><th>Transaction</th><th>Comment</th></tr>']
             for row in rows:
                 link = '<a href="tx/' + row[1]+ '">'+ row[1] + '</a>'
                 page['body'] += ['<tr><td>'+link+'</td><td>'+row[2]+'</td></tr>']
-            page['body'] += [ '</table>']
+            page['body'] += [ '</table></div>']
             return
 
         if tx_hash:
@@ -1041,16 +1041,16 @@ Once the threshold is reached, the content is displayed in place of the donation
 
         text = "Donate"
         link_text  = "<a style=\"text-decoration:none;color:"+textcolor+"\" href=\"javascript:alert('Donate to this Bitcoin address:\\n"+address+"');\">"+text+"</a>"
-        ret = """<table class="table table-bordered table-hover"><tr><td>
+        ret = """<div class="table-responsive"><table class="table table-bordered table-hover"><tr><td>
  <table class="table table-bordered table-hover">
   <tr><td style="%s width:%dpx; text-align:center;">%s</td><td></td></tr>
- </table>
+ </table></div>
 </td>
 <td>
- <table class="table table-bordered table-hover">
+ <div class="table-responsive"><table class="table table-bordered table-hover">
    <tr><td style="%s">%s</td></tr>
- </table>
-</td></tr></table>"""%(outer_style,leftwidth,left_style,progress,link_count,outer_style,right_style,link_text)
+ </table></div>
+</td></tr></table></div>"""%(outer_style,leftwidth,left_style,progress,link_count,outer_style,right_style,link_text)
 
         abe.do_raw(page, ret)
         page['content_type']='text/html'

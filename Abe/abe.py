@@ -356,6 +356,7 @@ class Abe:
         body = page['body']
         body += [
             abe.search_form(page),
+            '<div class="table-responsive">\n',
             '<table class="table table-bordered table-hover">\n',
             '<tr><th>Currency</th><th>Code</th><th>Block</th><th>Time</th>',
             '<th>Started</th><th>Age (days)</th><th>Coins Created</th>',
@@ -426,7 +427,7 @@ class Abe:
                         '<td>', percent_destroyed, '</td>']
 
             body += ['</tr>\n']
-        body += ['</table>\n']
+        body += ['</table></div>\n']
         if len(rows) == 0:
             body += ['<p>No block data found.</p>\n']
 
@@ -440,7 +441,7 @@ class Abe:
         return ret
 
     def get_default_chain(abe):
-        return abe.chain_lookup_by_name('Bitcoin')
+        return abe.chain_lookup_by_name('Machinecoin')
 
     def call_handler(abe, page, cmd):
         handler = abe.get_handler(cmd)
@@ -536,6 +537,7 @@ class Abe:
         extra = False
         #extra = True
         body += ['<p>', nav, '</p>\n',
+                 '<div class="table-responsive">',
                  '<table class="table table-bordered table-hover"><tr><th>Block</th><th>Approx. Time</th>',
                  '<th>Transactions</th><th>Value Out</th>',
                  '<th>Difficulty</th><th>Outstanding</th>',
@@ -582,7 +584,7 @@ class Abe:
                  '</td><td>', '%8g' % total_ss] if extra else '',
                 '</td></tr>\n']
 
-        body += ['</table>\n<p>', nav, '</p>\n']
+        body += ['</table></div>\n<p>', nav, '</p>\n']
 
     def _show_block(abe, where, bind, page, dotdotblock, chain):
         address_version = ('\0' if chain is None
@@ -788,7 +790,7 @@ class Abe:
 
         body += ['<h3>Transactions</h3>\n']
 
-        body += ['<table class="table table-bordered table-hover"><tr><th>Transaction</th><th>Fee</th>'
+        body += ['<div class="table-responsive"><table class="table table-bordered table-hover"><tr><th>Transaction</th><th>Fee</th>'
                  '<th>Size (kB)</th><th>From (amount)</th><th>To (amount)</th>'
                  '</tr>\n']
         for tx_id in tx_ids:
@@ -826,7 +828,7 @@ class Abe:
                     address_version, txout['pubkey_hash'], page['dotdot'])
                 body += [': ', format_satoshis(txout['value'], chain), '<br />']
             body += ['</td></tr>\n']
-        body += '</table>\n'
+        body += '</table></div>\n'
 
     def handle_block(abe, page):
         block_hash = wsgiref.util.shift_path_info(page['env'])
@@ -962,7 +964,7 @@ class Abe:
             '<br />\n',
             '<a href="../rawtx/', tx['hash'], '">Raw transaction</a><br />\n']
         body += ['</p>\n',
-                 '<a name="inputs"><h3>Inputs</h3></a>\n<table class="table table-bordered table-hover">\n',
+                 '<a name="inputs"><h3>Inputs</h3></a>\n<div class="table-responsive"><table class="table table-bordered table-hover">\n',
                  '<tr><th>Index</th><th>Previous output</th><th>Amount</th>',
                  '<th>From address</th>']
         if abe.store.keep_scriptsig:
@@ -971,14 +973,14 @@ class Abe:
         for txin in tx['in']:
             row_to_html(txin, 'i', 'o',
                         'Generation' if is_coinbase else 'Unknown')
-        body += ['</table>\n',
-                 '<a name="outputs"><h3>Outputs</h3></a>\n<table class="table table-bordered table-hover">\n',
+        body += ['</table></div>\n',
+                 '<a name="outputs"><h3>Outputs</h3></a>\n<div class="table-responsive"><table class="table table-bordered table-hover">\n',
                  '<tr><th>Index</th><th>Redeemed at input</th><th>Amount</th>',
                  '<th>To address</th><th>ScriptPubKey</th></tr>\n']
         for txout in tx['out']:
             row_to_html(txout, 'o', 'i', 'Not yet redeemed')
 
-        body += ['</table>\n']
+        body += ['</table></div>\n']
 
     def handle_rawtx(abe, page):
         abe.do_raw(page, abe.do_rawtx)
@@ -1154,7 +1156,7 @@ class Abe:
 
         body += ['</p>\n'
                  '<h3>Transactions</h3>\n'
-                 '<table class="table table-bordered table-hover">\n<tr><th>Transaction</th><th>Block</th>'
+                 '<div class="table-responsive"><table class="table table-bordered table-hover">\n<tr><th>Transaction</th><th>Block</th>'
                  '<th>Approx. Time</th><th>Amount</th><th>Balance</th>'
                  '<th>Currency</th></tr>\n']
 
@@ -1175,7 +1177,7 @@ class Abe:
                      format_satoshis(balance[elt['chain_id']], chain),
                      '</td><td>', escape(chain.code3),
                      '</td></tr>\n']
-        body += ['</table>\n']
+        body += ['</table></div>\n']
 
     def search_form(abe, page):
         q = (page['params'].get('q') or [''])[0]
