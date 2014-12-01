@@ -116,16 +116,6 @@ DEFAULT_TEMPLATE = """
         <div class="row" id="bigCallout">
             <div class="col-md-12">
 				%(body)s
-				<p><a href="%(dotdot)sq">API</a> (machine-readable pages)</p>
-				<p style="font-size: smaller">
-					<span style="font-style: italic">
-						Powered by <a href="%(ABE_URL)s">%(APPNAME)s</a>
-					</span>
-					%(download)s
-					Tips appreciated!
-					<a href="%(dotdot)saddress/%(DONATIONS_BTC)s">BTC</a>
-					<a href="%(dotdot)saddress/%(DONATIONS_NMC)s">NMC</a>
-				</p>
 			</div><!-- end col-md-12 -->
 		</div><!-- end row -->
 	</div><!-- end container -->
@@ -133,9 +123,13 @@ DEFAULT_TEMPLATE = """
 		<footer>
 			<div class="container">
 				<div class="row" id="menuBottom">
-					<div class="col-sm-4"></div><!-- end col-sm-4 -->
-
-					<div class="col-sm-4"></div><!-- end col-sm-4 -->
+					<div class="col-sm-4">
+						<h6><a href="%(dotdot)sq">API</a> (machine-readable pages) %(download)s powered by <a href="%(ABE_URL)s">%(APPNAME)s</a> </h6>
+					</div><!-- end col-sm-4 -->
+						
+					<div class="col-sm-4">
+						<h6>Tips appreciated! <a href="%(dotdot)saddress/%(DONATIONS_BTC)s">BTC</a> <a href="%(dotdot)saddress/%(DONATIONS_NMC)s">NMC</a></h6>
+					</div><!-- end col-sm-4 -->
 
 					<div class="col-sm-4">
 						<h6>Copyright &copy; 2014 MachineCoin Project</h6>
