@@ -97,7 +97,7 @@ DEFAULT_TEMPLATE = """
 				<span class="icon-bar"></span> <span class="icon-bar"></span>
 				<span class="icon-bar"></span> <span class=
 				"icon-bar"></span></button> <a class=
-				"navbar-brand" href="http://gitju.github.io/Machinecoin.org#main">Machinecoin</a>
+				"navbar-brand" href="%(dotdot)s%(HOMEPAGE)s#main">Machinecoin</a>
 			</div><!-- end navbar-header -->
 
 			<!-- Collect the nav links, forms, and other content for toggling -->
@@ -105,7 +105,7 @@ DEFAULT_TEMPLATE = """
 			"bs-example-navbar-collapse-1">
 				<ul class="nav navbar-nav">
 					<li class="active">
-						<a href="%(dotdot)s%(HOMEPAGE)s#main">Blockexplorer</a>
+						<a href="%(dotdot)s%(HOMEPAGE)s#main">Blockchain</a>
 					</li>
 				</ul><!-- end navbar-nav -->
 			</div><!-- end bs-example-navbar-collapse-1 -->
@@ -117,6 +117,9 @@ DEFAULT_TEMPLATE = """
             <div class="col-md-12">
 				%(body)s
 			</div><!-- end col-md-12 -->
+			<div class="col-md-12">
+				<a href="%(dotdot)sq">API</a> powered by <a href="%(ABE_URL)s">%(APPNAME)s</a>. 
+			</div><!-- end col-md-12 -->
 		</div><!-- end row -->
 	</div><!-- end container -->
 	<nav class="navbar navbar-default navbar-fixed-bottom" role="navigation">
@@ -124,15 +127,15 @@ DEFAULT_TEMPLATE = """
 			<div class="container">
 				<div class="row" id="menuBottom">
 					<div class="col-sm-4">
-						<h6><a href="%(dotdot)sq">API</a> (machine-readable pages) %(download)s powered by <a href="%(ABE_URL)s">%(APPNAME)s</a> </h6>
+						
 					</div><!-- end col-sm-4 -->
 						
 					<div class="col-sm-4">
-						<h6>Tips appreciated! <a href="%(dotdot)saddress/%(DONATIONS_BTC)s">BTC</a> <a href="%(dotdot)saddress/%(DONATIONS_NMC)s">NMC</a></h6>
+
 					</div><!-- end col-sm-4 -->
 
 					<div class="col-sm-4">
-						<h6>Copyright &copy; 2014 MachineCoin Project</h6>
+						<h6>Copyright &copy; 2014 Machinecoin Project</h6>
 					</div><!-- end col-sm-2 -->
 				</div><!-- end row -->
 			</div><!-- end container -->
