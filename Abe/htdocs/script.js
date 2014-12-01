@@ -3,7 +3,7 @@
 My Custom JS
 ============
 
-Author: Jürgen Scholz
+Author: J&uuml;rgen Scholz
 Updated: November 2014
 Notes: 
 

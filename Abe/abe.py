@@ -72,7 +72,7 @@ DEFAULT_TEMPLATE = """
     <meta content=
     "Machinecoin is a free and decentralized peer-to-peer cryptocurrency that is completely open source and uses scrypt as a proof-of-work algorithm. Machinecoin operates with no central authority or any banks; managing transactions and the issuing of Machinecoins is carried out collectively by the network itself."
     name="description">
-    <meta content="Jürgen Scholz" name="author">
+    <meta content="J&uuml;rgen Scholz" name="author">
     <meta content="index, follow" name="robots">
     <!-- Include Bootstrap CSS -->
     <link href="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.1/css/bootstrap.min.css" rel=
@@ -88,7 +88,7 @@ DEFAULT_TEMPLATE = """
 <body data-offset="60" data-spy="scroll" data-target=
 "#bs-example-navbar-collapse-1">
 	<nav class="navbar navbar-default navbar-fixed-top">
-		<div class="container">
+		<div class="container" >
 
 			<!-- Brand and toggle get grouped for better mobile display -->
 			<div class="navbar-header">
@@ -98,7 +98,7 @@ DEFAULT_TEMPLATE = """
 				<span class="icon-bar"></span> <span class="icon-bar"></span>
 				<span class="icon-bar"></span> <span class=
 				"icon-bar"></span></button> <a class=
-				"navbar-brand">Machinecoin</a>
+				"navbar-brand" href="%(dotdot)s%(HOMEPAGE)s">Machinecoin</a>
 			</div><!-- end navbar-header -->
 
 			<!-- Collect the nav links, forms, and other content for toggling -->
@@ -106,7 +106,7 @@ DEFAULT_TEMPLATE = """
 			"bs-example-navbar-collapse-1">
 				<ul class="nav navbar-nav">
 					<li class="active">
-						<a href="#main">Home</a>
+						<a href="%(dotdot)s%(HOMEPAGE)s">Home</a>
 					</li>
 				</ul><!-- end navbar-nav -->
 			</div><!-- end bs-example-navbar-collapse-1 -->
@@ -116,9 +116,6 @@ DEFAULT_TEMPLATE = """
     <div class="container" id="main">
         <div class="row" id="bigCallout">
             <div class="col-md-12">
-				<h1><a href="%(dotdot)s%(HOMEPAGE)s"><img
-				 src="%(dotdot)s%(STATIC_PATH)slogo32.png" alt="Abe logo" /></a> %(h1)s
-				</h1>
 				%(body)s
 				<p><a href="%(dotdot)sq">API</a> (machine-readable pages)</p>
 				<p style="font-size: smaller">
@@ -133,19 +130,21 @@ DEFAULT_TEMPLATE = """
 			</div><!-- end col-md-12 -->
 		</div><!-- end row -->
 	</div><!-- end container -->
-    <footer>
-        <div class="container">
-            <div class="row" id="menuBottom">
-                <div class="col-sm-4"></div><!-- end col-sm-4 -->
+	<nav class="navbar navbar-default navbar-fixed-bottom" role="navigation">
+		<footer>
+			<div class="container">
+				<div class="row" id="menuBottom">
+					<div class="col-sm-4"></div><!-- end col-sm-4 -->
 
-                <div class="col-sm-4"></div><!-- end col-sm-4 -->
+					<div class="col-sm-4"></div><!-- end col-sm-4 -->
 
-                <div class="col-sm-4">
-                    <h6>Copyright &copy; 2014 MachineCoin Project</h6>
-                </div><!-- end col-sm-2 -->
-            </div><!-- end row -->
-        </div><!-- end container -->
-    </footer>
+					<div class="col-sm-4">
+						<h6>Copyright &copy; 2014 MachineCoin Project</h6>
+					</div><!-- end col-sm-2 -->
+				</div><!-- end row -->
+			</div><!-- end container -->
+		</footer>
+	</nav>
     <!-- jQuery -->
     <script src="http://code.jquery.com/jquery-1.11.0.min.js"></script>
     <!-- Bootstrap JS -->
@@ -538,7 +537,7 @@ class Abe:
         extra = False
         #extra = True
         body += ['<p>', nav, '</p>\n',
-                 '<table><tr><th>Block</th><th>Approx. Time</th>',
+                 '<table class="table"><tr><th>Block</th><th>Approx. Time</th>',
                  '<th>Transactions</th><th>Value Out</th>',
                  '<th>Difficulty</th><th>Outstanding</th>',
                  '<th>Average Age</th><th>Chain Age</th>',
@@ -790,7 +789,7 @@ class Abe:
 
         body += ['<h3>Transactions</h3>\n']
 
-        body += ['<table><tr><th>Transaction</th><th>Fee</th>'
+        body += ['<table class="table"><tr><th>Transaction</th><th>Fee</th>'
                  '<th>Size (kB)</th><th>From (amount)</th><th>To (amount)</th>'
                  '</tr>\n']
         for tx_id in tx_ids:
@@ -964,7 +963,7 @@ class Abe:
             '<br />\n',
             '<a href="../rawtx/', tx['hash'], '">Raw transaction</a><br />\n']
         body += ['</p>\n',
-                 '<a name="inputs"><h3>Inputs</h3></a>\n<table>\n',
+                 '<a name="inputs"><h3>Inputs</h3></a>\n<table class="table">\n',
                  '<tr><th>Index</th><th>Previous output</th><th>Amount</th>',
                  '<th>From address</th>']
         if abe.store.keep_scriptsig:
@@ -974,7 +973,7 @@ class Abe:
             row_to_html(txin, 'i', 'o',
                         'Generation' if is_coinbase else 'Unknown')
         body += ['</table>\n',
-                 '<a name="outputs"><h3>Outputs</h3></a>\n<table>\n',
+                 '<a name="outputs"><h3>Outputs</h3></a>\n<table class="table">\n',
                  '<tr><th>Index</th><th>Redeemed at input</th><th>Amount</th>',
                  '<th>To address</th><th>ScriptPubKey</th></tr>\n']
         for txout in tx['out']:
@@ -1156,7 +1155,7 @@ class Abe:
 
         body += ['</p>\n'
                  '<h3>Transactions</h3>\n'
-                 '<table>\n<tr><th>Transaction</th><th>Block</th>'
+                 '<table class="table">\n<tr><th>Transaction</th><th>Block</th>'
                  '<th>Approx. Time</th><th>Amount</th><th>Balance</th>'
                  '<th>Currency</th></tr>\n']
 
@@ -1183,12 +1182,15 @@ class Abe:
         q = (page['params'].get('q') or [''])[0]
         return [
             '<p>Search by address, block number or hash, transaction or'
-            ' public key hash, or chain name:</p>\n'
-            '<form action="', page['dotdot'], 'search"><p>\n'
-            '<input name="q" size="64" value="', escape(q), '" />'
-            '<button type="submit">Search</button>\n'
-            '<br />Address or hash search requires at least the first ',
-            HASH_PREFIX_MIN, ' characters.</p></form>\n']
+            ' public key hash, or chain name: Address or hash search requires at least the first ',
+            HASH_PREFIX_MIN, ' characters.</p>\n'
+            '<form class="form-inline" role="form" action="', page['dotdot'], 'search"><p>\n'
+            '<div class="form-group">\n'
+            '<input type="text" class="form-control" name="q" id="q" size="64" value="', escape(q), '" />'
+            '</div>\n'
+            '<div class="form-group">\n'
+            '<button type="submit" class="btn btn-default">Search</button>\n'
+            '</div></form>\n']
 
     def handle_search(abe, page):
         page['title'] = 'Search'

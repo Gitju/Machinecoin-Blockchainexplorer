@@ -2,6 +2,10 @@
     Layout
     ------------------------------------ */
 
+#q {
+	width: 200px;
+}
+
 #menuBottom {
 	text-align: center;
 }
@@ -22,6 +26,8 @@ body {
     -moz-osx-font-smoothing: grayscale;
 	text-rendering: optimizeLegibility;
 	position: relative;
+	padding-top: 70px;
+	padding-bottom: 70px;
 }
 
 
