@@ -88,7 +88,7 @@ DEFAULT_TEMPLATE = """
 <body data-offset="60" data-spy="scroll" data-target=
 "#bs-example-navbar-collapse-1">
 	<nav class="navbar navbar-default navbar-fixed-top">
-		<div class="container" >
+		<div class="container-fluid" >
 
 			<!-- Brand and toggle get grouped for better mobile display -->
 			<div class="navbar-header">
@@ -131,7 +131,7 @@ DEFAULT_TEMPLATE = """
 		</div><!-- end container -->
 	</nav><!-- end nav -->
 	
-    <div class="container" id="main">
+    <div class="container-fluid" id="main">
         <div class="row" id="bigCallout">
             <div class="col-md-12">
 				%(body)s
@@ -145,8 +145,8 @@ DEFAULT_TEMPLATE = """
 	</div><!-- end container -->
 	<nav class="navbar navbar-default navbar-fixed-bottom" role="navigation">
 		<footer>
-			<div class="container">
-				<div class="row" id="menuBottom">
+			<div class="container-fluid">
+				<div class="row" id="credits">
 					<div class="col-sm-4">
 						<h6>Machinecoin Blockchain <a href="%(dotdot)sq">API</a> powered by <a href="%(ABE_URL)s">%(APPNAME)s</a></h6>
 					</div><!-- end col-sm-4 -->
@@ -155,7 +155,7 @@ DEFAULT_TEMPLATE = """
 						
 					</div><!-- end col-sm-4 -->
 
-					<div class="col-sm-4">
+					<div class="col-sm-4" id="menuBottom">
 						<h6>Copyright &copy; 2014 Machinecoin Project</h6>
 					</div><!-- end col-sm-2 -->
 				</div><!-- end row -->
