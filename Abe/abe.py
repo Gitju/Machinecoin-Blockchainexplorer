@@ -104,11 +104,11 @@ DEFAULT_TEMPLATE = """
 			<!-- Collect the nav links, forms, and other content for toggling -->
 			<div class="collapse navbar-collapse" id=
 			"bs-example-navbar-collapse-1">
-				<ul class="nav navbar-nav">
+				<!-- <ul class="nav navbar-nav">
 					<li class="active">
 						<a href="%(dotdot)s%(HOMEPAGE)s#main">Home</a>
 					</li>
-				</ul><!-- end navbar-nav -->
+				</ul>--><!-- end navbar-nav -->
                 <ul class="nav navbar-nav pull-right">
                     <li class="dropdown">
                         <a class="dropdown-toggle" data-toggle="dropdown" href=
