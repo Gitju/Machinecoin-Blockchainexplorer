@@ -156,7 +156,7 @@ DEFAULT_TEMPLATE = """
 					</div><!-- end col-sm-4 -->
 
 					<div class="col-sm-4" id="menuBottom">
-						<h6>Copyright &copy; 2014 Machinecoin Project</h6>
+						<h6>Copyright &copy; 2014-2015 Machinecoin Project</h6>
 					</div><!-- end col-sm-2 -->
 				</div><!-- end row -->
 			</div><!-- end container -->
