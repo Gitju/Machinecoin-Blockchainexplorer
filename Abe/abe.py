@@ -41,7 +41,7 @@ __version__ = version.__version__
 
 ABE_APPNAME = "Abe"
 ABE_VERSION = __version__
-ABE_URL = 'https://github.com/Gitju/Machinecoin-Blockchainexplorer-Abe'
+ABE_URL = 'https://github.com/machinecoin-project/Machinecoin-Blockchainexplorer-Abe'
 
 COPYRIGHT_YEARS = '2011'
 COPYRIGHT = "Abe developers"
