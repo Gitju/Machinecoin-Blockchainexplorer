@@ -24,8 +24,8 @@ import base58
 import Crypto.Hash.SHA256 as SHA256
 
 try:
-    import Crypto.Hash.RIPEMD160 as RIPEMD160
-except:
+    import Crypto.Hash.RIPEMD as RIPEMD160
+except Exception:
     import ripemd_via_hashlib as RIPEMD160
 
 # This function comes from bitcointools, bct-LICENSE.txt.
@@ -50,25 +50,31 @@ def short_hex(bytes):
         return t
     return t[0:4]+"..."+t[-4:]
 
-def double_sha256(s):
-    return SHA256.new(SHA256.new(s).digest()).digest()
+NULL_HASH = "\0" * 32
+GENESIS_HASH_PREV = NULL_HASH
 
-# Based on CBlock::BuildMerkleTree().
-def merkle(hashes):
-    while len(hashes) > 1:
-        size = len(hashes)
-        out = []
-        for i in xrange(0, size, 2):
-            i2 = min(i + 1, size - 1)
-            out.append(double_sha256(hashes[i] + hashes[i2]))
-        hashes = out
-    return hashes and hashes[0]
+def sha256(s):
+    return SHA256.new(s).digest()
+
+def double_sha256(s):
+    return sha256(sha256(s))
+
+def sha3_256(s):
+    import hashlib
+    import sys
+    if sys.version_info < (3, 4):
+        import sha3
+    return hashlib.sha3_256(s).digest()
 
 def pubkey_to_hash(pubkey):
     return RIPEMD160.new(SHA256.new(pubkey).digest()).digest()
 
 def calculate_target(nBits):
-    return (nBits & 0xffffff) << (8 * ((nBits >> 24) - 3))
+    # cf. CBigNum::SetCompact in bignum.h
+    shift = 8 * (((nBits >> 24) & 0xff) - 3)
+    bits = nBits & 0x7fffff
+    sign = -1 if (nBits & 0x800000) else 1
+    return sign * (bits << shift if shift >= 0 else bits >> -shift)
 
 def target_to_difficulty(target):
     return ((1 << 224) - 1) * 1000 / (target + 1) / 1000.0
@@ -149,10 +155,6 @@ def jsonrpc(url, method, *params):
         raise JsonrpcException(resp['error'], method, params)
     return resp['result']
 
-def is_coinbase_tx(tx):
-    return len(tx['txIn']) == 1 and tx['txIn'][0]['prevout_hash'] == \
-        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-
 def str_to_ds(s):
     import BCDataStream
     ds = BCDataStream.BCDataStream()
@@ -189,3 +191,9 @@ class CmdLine(object):
         store = DataStore.new(args)
 
         return store, argv
+
+# Abstract hex-binary conversions for eventual porting to Python 3.
+def hex2b(s):
+    return s.decode('hex')
+def b2hex(b):
+    return b.encode('hex')

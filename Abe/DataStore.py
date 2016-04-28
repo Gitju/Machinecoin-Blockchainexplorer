@@ -16,15 +16,18 @@
 # License along with this program.  If not, see
 # <http://www.gnu.org/licenses/agpl.html>.
 
-# This module combines four functions that might be better split up:
-# 1. A feature-detecting, SQL-transforming database abstraction layer
-# 2. Abe's schema
-# 3. Abstraction over the schema for importing blocks, etc.
-# 4. Code to load data by scanning blockfiles or using JSON-RPC.
+# This module combines three functions that might be better split up:
+# 1. Abe's schema
+# 2. Abstraction over the schema for importing blocks, etc.
+# 3. Code to load data by scanning blockfiles or using JSON-RPC.
 
 import os
 import re
+import time
 import errno
+import logging
+
+import SqlAbstraction
 
 import Chain
 
@@ -32,10 +35,10 @@ import Chain
 import BCDataStream
 import deserialize
 import util
-import logging
 import base58
 
-SCHEMA_VERSION = "Abe37"
+SCHEMA_TYPE = "Abe"
+SCHEMA_VERSION = SCHEMA_TYPE + "40"
 
 CONFIG_DEFAULTS = {
     "dbtype":             None,
@@ -47,44 +50,55 @@ CONFIG_DEFAULTS = {
     "commit_bytes":       None,
     "log_sql":            None,
     "log_rpc":            None,
+    "default_chain":      "Bitcoin",
     "datadir":            None,
     "ignore_bit8_chains": None,
     "use_firstbits":      False,
     "keep_scriptsig":     True,
     "import_tx":          [],
     "default_loader":     "default",
+    "rpc_load_mempool":   False,
 }
 
 WORK_BITS = 304  # XXX more than necessary.
 
 CHAIN_CONFIG = [
-    {"chain":"Machinecoin",
+    {"chain":"Bitcoin"},
+    {"chain":"Testnet"},
+    {"chain":"Namecoin"},
+    {"chain":"Weeds", "policy":"Sha256Chain",
+     "code3":"WDS", "address_version":"\xf3", "magic":"\xf8\xbf\xb5\xda"},
+    {"chain":"BeerTokens", "policy":"Sha256Chain",
+     "code3":"BER", "address_version":"\xf2", "magic":"\xf7\xbf\xb5\xdb"},
+    {"chain":"SolidCoin", "policy":"Sha256Chain",
+     "code3":"SCN", "address_version":"\x7d", "magic":"\xde\xad\xba\xbe"},
+    {"chain":"ScTestnet", "policy":"Sha256Chain",
+     "code3":"SC0", "address_version":"\x6f", "magic":"\xca\xfe\xba\xbe"},
+    {"chain":"Worldcoin", "policy":"Sha256Chain",
+     "code3":"WDC", "address_version":"\x49", "magic":"\xfb\xc0\xb6\xdb"},
+    {"chain":"NovaCoin"},
+    {"chain":"CryptoCash"},
+    {"chain":"Anoncoin", "policy":"Sha256Chain",
+     "code3":"ANC", "address_version":"\x17", "magic":"\xFA\xCA\xBA\xDA" },
+    {"chain":"Hirocoin"},
+    {"chain":"Machinecoin", "policy":"Sha256Chain",
      "code3":"MAC", "address_version":"\x32", "magic":"\xfb\xc0\xb6\xdb"},
+    {"chain":"Bitleu"},
+    {"chain":"Maxcoin"},
+    {"chain":"Dash"},
+    {"chain":"BlackCoin"},
+    {"chain":"Unbreakablecoin"},
     #{"chain":"",
     # "code3":"", "address_version":"\x", "magic":""},
-]
+    ]
 
-NULL_HASH = "\0" * 32
-GENESIS_HASH_PREV = NULL_HASH
-
-NULL_PUBKEY_HASH = "\0" * 20
+NULL_PUBKEY_HASH = "\0" * Chain.PUBKEY_HASH_LENGTH
 NULL_PUBKEY_ID = 0
 PUBKEY_ID_NETWORK_FEE = NULL_PUBKEY_ID
 
-# Regex to match a pubkey hash ("Bitcoin address transaction") in
-# txout_scriptPubKey.  Tolerate OP_NOP (0x61) at the end, seen in Bitcoin
-# 127630 and 128239.
-SCRIPT_ADDRESS_RE = re.compile("\x76\xa9\x14(.{20})\x88\xac\x61?\\Z", re.DOTALL)
-
-# Regex to match a pubkey ("IP address transaction") in txout_scriptPubKey.
-SCRIPT_PUBKEY_RE = re.compile(
-    ".((?<=\x41)(?:.{65})|(?<=\x21)(?:.{33}))\xac\\Z", re.DOTALL)
-
-# Script that can never be redeemed, used in Namecoin.
-SCRIPT_NETWORK_FEE = '\x6a'
-
-# Size of the script columns.
+# Size of the script and pubkey columns in bytes.
 MAX_SCRIPT = 1000000
+MAX_PUBKEY = 65
 
 NO_CLOB = 'BUG_NO_CLOB'
 
@@ -99,10 +113,16 @@ class MerkleRootMismatch(InvalidBlock):
         return 'Block header Merkle root does not match its transactions. ' \
             'block hash=%s' % (ex.block_hash[::-1].encode('hex'),)
 
+class MalformedHash(ValueError):
+    pass
+
+class MalformedAddress(ValueError):
+    pass
+
 class DataStore(object):
 
     """
-    Bitcoin data storage class based on DB-API 2 and SQL1992 with
+    Bitcoin data storage class based on DB-API 2 and standard SQL with
     workarounds to support SQLite3, PostgreSQL/psycopg2, MySQL,
     Oracle, ODBC, and IBM DB2.
     """
@@ -128,24 +148,33 @@ class DataStore(object):
 
         store.args = args
         store.log = logging.getLogger(__name__)
-        store.sqllog = logging.getLogger(__name__ + ".sql")
-        if not args.log_sql:
-            store.sqllog.setLevel(logging.ERROR)
+
         store.rpclog = logging.getLogger(__name__ + ".rpc")
         if not args.log_rpc:
             store.rpclog.setLevel(logging.ERROR)
 
         if args.dbtype is None:
             store.log.warn("dbtype not configured, see abe.conf for examples");
-            store.module = None
+            store.dbmodule = None
             store.config = CONFIG_DEFAULTS.copy()
             store.datadirs = []
             store.use_firstbits = CONFIG_DEFAULTS['use_firstbits']
+            store._sql = None
             return
+        store.dbmodule = __import__(args.dbtype)
 
-        store.module = __import__(args.dbtype)
-        store.auto_reconnect = False
-        store.init_conn()
+        sql_args = lambda: 1
+        sql_args.module = store.dbmodule
+        sql_args.connect_args = args.connect_args
+        sql_args.binary_type = args.binary_type
+        sql_args.int_type = args.int_type
+        sql_args.log_sql = args.log_sql
+        sql_args.prefix = "abe_"
+        sql_args.config = {}
+        store.sql_args = sql_args
+        store.set_db(None)
+        store.init_sql()
+
         store._blocks = {}
 
         # Read the CONFIG and CONFIGVAR tables if present.
@@ -162,26 +191,26 @@ class DataStore(object):
 
         if store.config is None:
             store.initialize()
-        elif store.config['schema_version'] == SCHEMA_VERSION:
-            pass
-        elif args.upgrade:
-            store._set_sql_flavour()
-            import upgrade
-            upgrade.upgrade_schema(store)
         else:
-            raise Exception(
-                "Database schema version (%s) does not match software"
-                " (%s).  Please run with --upgrade to convert database."
-                % (store.config['schema_version'], SCHEMA_VERSION))
+            store.init_sql()
 
-        store._set_sql_flavour()
-        store.auto_reconnect = True
+            if store.config['schema_version'] == SCHEMA_VERSION:
+                pass
+            elif args.upgrade:
+                import upgrade
+                upgrade.upgrade_schema(store)
+            else:
+                raise Exception(
+                    "Database schema version (%s) does not match software"
+                    " (%s).  Please run with --upgrade to convert database."
+                    % (store.config['schema_version'], SCHEMA_VERSION))
+        store._sql.auto_reconnect = True
 
         if args.rescan:
             store.sql("UPDATE datadir SET blkfile_number=1, blkfile_offset=0")
 
         store._init_datadirs()
-        store._init_chains()
+        store.init_chains()
 
         store.commit_bytes = args.commit_bytes
         if store.commit_bytes is None:
@@ -201,446 +230,115 @@ class DataStore(object):
 
         store.default_loader = args.default_loader
 
-        if store.in_transaction:
-            store.commit()
+        store.rpc_load_mempool = args.rpc_load_mempool
 
+        store.default_chain = args.default_chain;
 
-    def init_conn(store):
-        store.conn = store.connect()
-        store.cursor = store.conn.cursor()
-        store.in_transaction = False
+        store.commit()
+
+    def set_db(store, db):
+        store._sql = db
+
+    def get_db(store):
+        return store._sql
 
     def connect(store):
-        cargs = store.args.connect_args
-
-        if cargs is None:
-            conn = store.module.connect()
-        else:
-            try:
-                conn = store._connect(cargs)
-            except UnicodeError:
-                # Perhaps this driver needs its strings encoded.
-                # Python's default is ASCII.  Let's try UTF-8, which
-                # should be the default anyway.
-                #import locale
-                #enc = locale.getlocale()[1] or locale.getdefaultlocale()[1]
-                enc = 'UTF-8'
-                def to_utf8(obj):
-                    if isinstance(obj, dict):
-                        for k in obj.keys():
-                            obj[k] = to_utf8(obj[k])
-                    if isinstance(obj, list):
-                        return map(to_utf8, obj)
-                    if isinstance(obj, unicode):
-                        return obj.encode(enc)
-                    return obj
-                conn = store._connect(to_utf8(cargs))
-                store.log.info("Connection required conversion to UTF-8")
-
-        return conn
-
-    def _connect(store, cargs):
-        if isinstance(cargs, dict):
-            if ""  in cargs:
-                cargs = cargs.copy()
-                nkwargs = cargs[""]
-                del(cargs[""])
-                if isinstance(nkwargs, list):
-                    return store.module.connect(*nkwargs, **cargs)
-                return store.module.connect(nkwargs, **cargs)
-            else:
-                return store.module.connect(**cargs)
-        if isinstance(cargs, list):
-            return store.module.connect(*cargs)
-        return store.module.connect(cargs)
+        return store._sql.connect()
 
     def reconnect(store):
-        store.log.info("Reconnecting to database.")
-        try:
-            store.cursor.close()
-        except:
-            pass
-        try:
-            store.conn.close()
-        except:
-            pass
-        store.init_conn()
+        return store._sql.reconnect()
+
+    def close(store):
+        store._sql.close()
+
+    def commit(store):
+        store._sql.commit()
+
+    def rollback(store):
+        if store._sql is not None:
+            store._sql.rollback()
+
+    def sql(store, stmt, params=()):
+        store._sql.sql(stmt, params)
+
+    def ddl(store, stmt):
+        store._sql.ddl(stmt)
+
+    def selectrow(store, stmt, params=()):
+        return store._sql.selectrow(stmt, params)
+
+    def selectall(store, stmt, params=()):
+        return store._sql.selectall(stmt, params)
+
+    def rowcount(store):
+        return store._sql.rowcount()
+
+    def create_sequence(store, key):
+        store._sql.create_sequence(key)
+
+    def drop_sequence(store, key):
+        store._sql.drop_sequence(key)
+
+    def new_id(store, key):
+        return store._sql.new_id(key)
+
+    def init_sql(store):
+        sql_args = store.sql_args
+        if hasattr(store, 'config'):
+            for name in store.config.keys():
+                if name.startswith('sql.'):
+                    sql_args.config[name[len('sql.'):]] = store.config[name]
+        if store._sql:
+            store._sql.close()  # XXX Could just set_flavour.
+        store.set_db(SqlAbstraction.SqlAbstraction(sql_args))
+        store.init_binfuncs()
+
+    def init_binfuncs(store):
+        store.binin       = store._sql.binin
+        store.binin_hex   = store._sql.binin_hex
+        store.binin_int   = store._sql.binin_int
+        store.binout      = store._sql.binout
+        store.binout_hex  = store._sql.binout_hex
+        store.binout_int  = store._sql.binout_int
+        store.intin       = store._sql.intin
+        store.hashin      = store._sql.revin
+        store.hashin_hex  = store._sql.revin_hex
+        store.hashout     = store._sql.revout
+        store.hashout_hex = store._sql.revout_hex
 
     def _read_config(store):
         # Read table CONFIGVAR if it exists.
         config = {}
         try:
-            store.cursor.execute("""
+            for name, value in store.selectall("""
                 SELECT configvar_name, configvar_value
-                  FROM configvar""")
-            for name, value in store.cursor.fetchall():
+                  FROM configvar"""):
                 config[name] = '' if value is None else value
             if config:
                 return config
 
-        except store.module.DatabaseError:
+        except store.dbmodule.DatabaseError:
             try:
                 store.rollback()
-            except:
+            except Exception:
                 pass
 
         # Read legacy table CONFIG if it exists.
         try:
-            store.cursor.execute("""
+            row = store.selectrow("""
                 SELECT schema_version, binary_type
                   FROM config
                  WHERE config_id = 1""")
-            row = store.cursor.fetchone()
             sv, btype = row
             return { 'schema_version': sv, 'binary_type': btype }
-        except:
+        except Exception:
             try:
                 store.rollback()
-            except:
+            except Exception:
                 pass
 
         # Return None to indicate no schema found.
         return None
-
-    # Accommodate SQL quirks.
-    def _set_sql_flavour(store):
-        def identity(x):
-            return x
-        transform = identity
-        selectall = store._selectall
-
-        if store.module.paramstyle in ('format', 'pyformat'):
-            transform = store._qmark_to_format(transform)
-        elif store.module.paramstyle == 'named':
-            transform = store._qmark_to_named(transform)
-        elif store.module.paramstyle != 'qmark':
-            store.log.warning("Database parameter style is "
-                              "%s, trying qmark", module.paramstyle)
-            pass
-
-        # Binary I/O with the database.
-        # Hashes are a special type; since the protocol treats them as
-        # 256-bit integers and represents them as little endian, we
-        # have to reverse them in hex to satisfy human expectations.
-        def rev(x):
-            return None if x is None else x[::-1]
-        def to_hex(x):
-            return None if x is None else str(x).encode('hex')
-        def from_hex(x):
-            return None if x is None else x.decode('hex')
-        def to_hex_rev(x):
-            return None if x is None else str(x)[::-1].encode('hex')
-        def from_hex_rev(x):
-            return None if x is None else x.decode('hex')[::-1]
-
-        val = store.config.get('binary_type')
-
-        if val in (None, 'str', "binary"):
-            binin       = identity
-            binin_hex   = from_hex
-            binout      = identity
-            binout_hex  = to_hex
-            hashin      = rev
-            hashin_hex  = from_hex
-            hashout     = rev
-            hashout_hex = to_hex
-
-            if val == "binary":
-                transform = store._sql_binary_as_binary(transform)
-
-        elif val in ("buffer", "bytearray", "pg-bytea"):
-            if val == "bytearray":
-                def to_btype(x):
-                    return None if x is None else bytearray(x)
-            else:
-                def to_btype(x):
-                    return None if x is None else buffer(x)
-
-            def to_str(x):
-                return None if x is None else str(x)
-
-            binin       = to_btype
-            binin_hex   = lambda x: to_btype(from_hex(x))
-            binout      = to_str
-            binout_hex  = to_hex
-            hashin      = lambda x: to_btype(rev(x))
-            hashin_hex  = lambda x: to_btype(from_hex(x))
-            hashout     = rev
-            hashout_hex = to_hex
-
-            if val == "pg-bytea":
-                transform = store._sql_binary_as_bytea(transform)
-
-        elif val == "hex":
-            transform = store._sql_binary_as_hex(transform)
-            binin       = to_hex
-            binin_hex   = identity
-            binout      = from_hex
-            binout_hex  = identity
-            hashin      = to_hex_rev
-            hashin_hex  = identity
-            hashout     = from_hex_rev
-            hashout_hex = identity
-
-        else:
-            raise Exception("Unsupported binary-type %s" % (val,))
-
-        val = store.config.get('int_type')
-
-        if val in (None, 'int'):
-            intin = identity
-
-        elif val == 'decimal':
-            import decimal
-            def _intin(x):
-                return None if x is None else decimal.Decimal(x)
-            intin = _intin
-
-        elif val == 'str':
-            def _intin(x):
-                return None if x is None else str(x)
-            intin = _intin
-            # Work around sqlite3's integer overflow.
-            transform = store._approximate_txout(transform)
-
-        else:
-            raise Exception("Unsupported int-type %s" % (val,))
-
-        val = store.config.get('sequence_type')
-        if val in (None, 'update'):
-            new_id = lambda key: store._new_id_update(key)
-            create_sequence = lambda key: store._create_sequence_update(key)
-            drop_sequence = lambda key: store._drop_sequence_update(key)
-
-        elif val == 'mysql':
-            new_id = lambda key: store._new_id_mysql(key)
-            create_sequence = lambda key: store._create_sequence_mysql(key)
-            drop_sequence = lambda key: store._drop_sequence_mysql(key)
-
-        else:
-            create_sequence = lambda key: store._create_sequence(key)
-            drop_sequence = lambda key: store._drop_sequence(key)
-
-            if val == 'oracle':
-                new_id = lambda key: store._new_id_oracle(key)
-            elif val == 'nvf':
-                new_id = lambda key: store._new_id_nvf(key)
-            elif val == 'postgres':
-                new_id = lambda key: store._new_id_postgres(key)
-            elif val == 'db2':
-                new_id = lambda key: store._new_id_db2(key)
-                create_sequence = lambda key: store._create_sequence_db2(key)
-            else:
-                raise Exception("Unsupported sequence-type %s" % (val,))
-
-        # Convert Oracle LOB to str.
-        if hasattr(store.module, "LOB") and isinstance(store.module.LOB, type):
-            def fix_lob(fn):
-                def ret(x):
-                    return None if x is None else fn(str(x))
-                return ret
-            binout = fix_lob(binout)
-            binout_hex = fix_lob(binout_hex)
-
-        val = store.config.get('limit_style')
-        if val in (None, 'native'):
-            pass
-        elif val == 'emulated':
-            selectall = store.emulate_limit(selectall)
-
-        store.sql_transform = transform
-        store.selectall = selectall
-        store._sql_cache = {}
-
-        store.binin       = binin
-        store.binin_hex   = binin_hex
-        store.binout      = binout
-        store.binout_hex  = binout_hex
-        store.hashin      = hashin
-        store.hashin_hex  = hashin_hex
-        store.hashout     = hashout
-        store.hashout_hex = hashout_hex
-
-        # Might reimplement these someday...
-        def binout_int(x):
-            if x is None:
-                return None
-            return int(binout_hex(x), 16)
-        def binin_int(x, bits):
-            if x is None:
-                return None
-            return binin_hex(("%%0%dx" % (bits / 4)) % x)
-        store.binout_int  = binout_int
-        store.binin_int   = binin_int
-
-        store.intin       = intin
-        store.new_id      = new_id
-        store.create_sequence = create_sequence
-        store.drop_sequence = drop_sequence
-
-    def _execute(store, stmt, params):
-        try:
-            store.cursor.execute(stmt, params)
-        except (store.module.OperationalError, store.module.InternalError,
-                store.module.ProgrammingError) as e:
-            if store.in_transaction or not store.auto_reconnect:
-                raise
-
-            store.log.warning("Replacing possible stale cursor: %s", e)
-
-            try:
-                store.reconnect()
-            except:
-                store.log.exception("Failed to reconnect")
-                raise e
-
-            store.cursor.execute(stmt, params)
-
-    def sql(store, stmt, params=()):
-        cached = store._sql_cache.get(stmt)
-        if cached is None:
-            cached = store.sql_transform(stmt)
-            store._sql_cache[stmt] = cached
-        store.sqllog.info("EXEC: %s %s", cached, params)
-        try:
-            store._execute(cached, params)
-        except Exception, e:
-            store.sqllog.info("EXCEPTION: %s", e)
-            raise
-        finally:
-            store.in_transaction = True
-
-    def ddl(store, stmt):
-        if stmt.lstrip().startswith("CREATE TABLE "):
-            stmt += store.config['create_table_epilogue']
-        stmt = store._sql_fallback_to_lob(store.sql_transform(stmt))
-        store.sqllog.info("DDL: %s", stmt)
-        try:
-            store.cursor.execute(stmt)
-        except Exception, e:
-            store.sqllog.info("EXCEPTION: %s", e)
-            raise
-        if store.config['ddl_implicit_commit'] == 'false':
-            store.commit()
-        else:
-            store.in_transaction = False
-
-    # Convert standard placeholders to Python "format" style.
-    def _qmark_to_format(store, fn):
-        def ret(stmt):
-            # XXX Simplified by assuming no literals contain "?".
-            return fn(stmt.replace('%', '%%').replace("?", "%s"))
-        return ret
-
-    # Convert standard placeholders to Python "named" style.
-    def _qmark_to_named(store, fn):
-        def ret(stmt):
-            i = [0]
-            def newname(m):
-                i[0] += 1
-                return ":p%d" % (i[0],)
-            # XXX Simplified by assuming no literals contain "?".
-            return fn(re.sub("\\?", newname, stmt))
-        return ret
-
-    # Convert the standard BIT type to a hex string for databases
-    # and drivers that don't support BIT.
-    def _sql_binary_as_hex(store, fn):
-        patt = re.compile("BIT((?: VARYING)?)\\(([0-9]+)\\)")
-        def fixup(match):
-            # XXX This assumes no string literals match.
-            return (("VARCHAR(" if match.group(1) else "CHAR(") +
-                    str(int(match.group(2)) / 4) + ")")
-        def ret(stmt):
-            # XXX This assumes no string literals match.
-            return fn(patt.sub(fixup, stmt).replace("X'", "'"))
-        return ret
-
-    # Convert the standard BIT type to a binary string for databases
-    # and drivers that don't support BIT.
-    def _sql_binary_as_binary(store, fn):
-        patt = re.compile("BIT((?: VARYING)?)\\(([0-9]+)\\)")
-        def fixup(match):
-            # XXX This assumes no string literals match.
-            return (("VARBINARY(" if match.group(1) else "BINARY(") +
-                    str(int(match.group(2)) / 8) + ")")
-        def ret(stmt):
-            # XXX This assumes no string literals match.
-            return fn(patt.sub(fixup, stmt))
-        return ret
-
-    # Convert the standard BIT type to the PostgreSQL BYTEA type.
-    def _sql_binary_as_bytea(store, fn):
-        type_patt = re.compile("BIT((?: VARYING)?)\\(([0-9]+)\\)")
-        lit_patt = re.compile("X'((?:[0-9a-fA-F][0-9a-fA-F])*)'")
-        def fix_type(match):
-            # XXX This assumes no string literals match.
-            return "BYTEA"
-        def fix_lit(match):
-            ret = "'"
-            for i in match.group(1).decode('hex'):
-                ret += r'\\%03o' % ord(i)
-            ret += "'::bytea"
-            return ret
-        def ret(stmt):
-            stmt = type_patt.sub(fix_type, stmt)
-            stmt = lit_patt.sub(fix_lit, stmt)
-            return fn(stmt)
-        return ret
-
-    # Converts VARCHAR types that are too long to CLOB or similar.
-    def _sql_fallback_to_lob(store, stmt):
-        try:
-            max_varchar = int(store.config['max_varchar'])
-            clob_type = store.config['clob_type']
-        except:
-            return stmt
-
-        patt = re.compile("VARCHAR\\(([0-9]+)\\)")
-
-        def fixup(match):
-            # XXX This assumes no string literals match.
-            width = int(match.group(1))
-            if width > max_varchar and clob_type != NO_CLOB:
-                return clob_type
-            return "VARCHAR(%d)" % (width,)
-
-        return patt.sub(fixup, stmt)
-
-    def _approximate_txout(store, fn):
-        def ret(stmt):
-            return fn(re.sub(
-                    r'\btxout_value txout_approx_value\b',
-                    'CAST(txout_value AS DOUBLE PRECISION) txout_approx_value',
-                    stmt))
-        return ret
-
-    def emulate_limit(store, selectall):
-        limit_re = re.compile(r"(.*)\bLIMIT\s+(\?|\d+)\s*\Z", re.DOTALL)
-        def ret(stmt, params=()):
-            match = limit_re.match(stmt)
-            if match:
-                if match.group(2) == '?':
-                    n = params[-1]
-                    params = params[:-1]
-                else:
-                    n = int(match.group(2))
-                store.sql(match.group(1), params)
-                return [ store.cursor.fetchone() for i in xrange(n) ]
-            return selectall(stmt, params)
-        return ret
-
-    def selectrow(store, stmt, params=()):
-        store.sql(stmt, params)
-        ret = store.cursor.fetchone()
-        store.sqllog.debug("FETCH: %s", ret)
-        return ret
-
-    def _selectall(store, stmt, params=()):
-        store.sql(stmt, params)
-        ret = store.cursor.fetchall()
-        store.sqllog.debug("FETCHALL: %s", ret)
-        return ret
 
     def _init_datadirs(store):
         """Parse store.args.datadir, create store.datadirs."""
@@ -719,6 +417,12 @@ class DataStore(object):
                         elif isinstance(addr_vers, unicode):
                             addr_vers = addr_vers.encode('latin_1')
 
+                        script_addr_vers = dircfg.get('script_addr_vers')
+                        if script_addr_vers is None:
+                            script_addr_vers = "\x05"
+                        elif isinstance(script_addr_vers, unicode):
+                            script_addr_vers = script_addr_vers.encode('latin_1')
+
                         decimals = dircfg.get('decimals')
                         if decimals is not None:
                             decimals = int(decimals)
@@ -729,11 +433,11 @@ class DataStore(object):
                         store.sql("""
                             INSERT INTO chain (
                                 chain_id, chain_name, chain_code3,
-                                chain_address_version, chain_policy,
+                                chain_address_version, chain_script_addr_vers, chain_policy,
                                 chain_decimals
-                            ) VALUES (?, ?, ?, ?, ?, ?)""",
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                                   (chain_id, chain_name, code3,
-                                   store.binin(addr_vers),
+                                   store.binin(addr_vers), store.binin(script_addr_vers),
                                    dircfg.get('policy', chain_name), decimals))
                         store.commit()
                         store.log.warning("Assigned chain_id %d to %s",
@@ -759,7 +463,7 @@ class DataStore(object):
                 }
             store.datadirs.append(d)
 
-    def _init_chains(store):
+    def init_chains(store):
         store.chains_by = lambda: 0
         store.chains_by.id = {}
         store.chains_by.name = {}
@@ -770,11 +474,11 @@ class DataStore(object):
         if isinstance(no_bit8_chains, str):
             no_bit8_chains = [no_bit8_chains]
 
-        for chain_id, magic, chain_name, chain_code3, address_version, \
+        for chain_id, magic, chain_name, chain_code3, address_version, script_addr_vers, \
                 chain_policy, chain_decimals in \
                 store.selectall("""
                     SELECT chain_id, chain_magic, chain_name, chain_code3,
-                           chain_address_version, chain_policy, chain_decimals
+                           chain_address_version, chain_script_addr_vers, chain_policy, chain_decimals
                       FROM chain
                 """):
             chain = Chain.create(
@@ -783,6 +487,7 @@ class DataStore(object):
                 name            = unicode(chain_name),
                 code3           = chain_code3 and unicode(chain_code3),
                 address_version = store.binout(address_version),
+                script_addr_vers = store.binout(script_addr_vers),
                 policy          = unicode(chain_policy),
                 decimals        = None if chain_decimals is None else \
                     int(chain_decimals))
@@ -794,131 +499,17 @@ class DataStore(object):
 
             store.chains_by.id[chain.id] = chain
             store.chains_by.name[chain.name] = chain
-            store.chains_by.magic[chain.magic] = chain
+            store.chains_by.magic[bytes(chain.magic)] = chain
 
     def get_chain_by_id(store, chain_id):
-        return store.chains_by.id[chain_id]
+        return store.chains_by.id[int(chain_id)]
 
     def get_chain_by_name(store, name):
         return store.chains_by.name.get(name, None)
 
-    def _new_id_update(store, key):
-        """
-        Allocate a synthetic identifier by updating a table.
-        """
-        while True:
-            row = store.selectrow(
-                "SELECT nextid FROM abe_sequences WHERE sequence_key = ?",
-                (key,))
-            if row is None:
-                raise Exception("Sequence %s does not exist" % (key,))
-
-            ret = row[0]
-            store.sql("UPDATE abe_sequences SET nextid = nextid + 1"
-                      " WHERE sequence_key = ? AND nextid = ?",
-                      (key, ret))
-            if store.cursor.rowcount == 1:
-                return ret
-            store.log.info('Contention on abe_sequences %s:%d', key, ret)
-
-    def _get_sequence_initial_value(store, key):
-        (ret,) = store.selectrow("SELECT MAX(" + key + "_id) FROM " + key)
-        ret = 1 if ret is None else ret + 1
-        return ret
-
-    def _create_sequence_update(store, key):
-        store.commit()
-        ret = store._get_sequence_initial_value(key)
-        try:
-            store.sql("INSERT INTO abe_sequences (sequence_key, nextid)"
-                      " VALUES (?, ?)", (key, ret))
-        except store.module.DatabaseError, e:
-            store.rollback()
-            try:
-                store.ddl(store._ddl['abe_sequences'])
-            except:
-                store.rollback()
-                raise e
-            store.sql("INSERT INTO abe_sequences (sequence_key, nextid)"
-                      " VALUES (?, ?)", (key, ret))
-
-    def _drop_sequence_update(store, key):
-        store.commit()
-        store.sql("DELETE FROM abe_sequences WHERE sequence_key = ?", (key,))
-        store.commit()
-
-    def _new_id_oracle(store, key):
-        (ret,) = store.selectrow("SELECT " + key + "_seq.NEXTVAL FROM DUAL")
-        return ret
-
-    def _create_sequence(store, key):
-        store.ddl("CREATE SEQUENCE %s_seq START WITH %d"
-                  % (key, store._get_sequence_initial_value(key)))
-
-    def _drop_sequence(store, key):
-        store.ddl("DROP SEQUENCE %s_seq" % (key,))
-
-    def _new_id_nvf(store, key):
-        (ret,) = store.selectrow("SELECT NEXT VALUE FOR " + key + "_seq")
-        return ret
-
-    def _new_id_postgres(store, key):
-        (ret,) = store.selectrow("SELECT NEXTVAL('" + key + "_seq')")
-        return ret
-
-    def _create_sequence_db2(store, key):
-        store.commit()
-        try:
-            rows = store.selectall("SELECT 1 FROM abe_dual")
-            if len(rows) != 1:
-                store.sql("INSERT INTO abe_dual(x) VALUES ('X')")
-        except store.module.DatabaseError, e:
-            store.rollback()
-            store.drop_table_if_exists('abe_dual')
-            store.ddl("CREATE TABLE abe_dual (x CHAR(1))")
-            store.sql("INSERT INTO abe_dual(x) VALUES ('X')")
-            store.log.info("Created silly table abe_dual")
-        store._create_sequence(key)
-
-    def _new_id_db2(store, key):
-        (ret,) = store.selectrow("SELECT NEXTVAL FOR " + key + "_seq"
-                                 " FROM abe_dual")
-        return ret
-
-    def _create_sequence_mysql(store, key):
-        store.ddl("CREATE TABLE %s_seq (id BIGINT AUTO_INCREMENT PRIMARY KEY)"
-                  " AUTO_INCREMENT=%d"
-                  % (key, store._get_sequence_initial_value(key)))
-
-    def _drop_sequence_mysql(store, key):
-        store.ddl("DROP TABLE %s_seq" % (key,))
-
-    def _new_id_mysql(store, key):
-        store.sql("INSERT INTO " + key + "_seq () VALUES ()")
-        (ret,) = store.selectrow("SELECT LAST_INSERT_ID()")
-        if ret % 1000 == 0:
-            store.sql("DELETE FROM " + key + "_seq WHERE id < ?", (ret,))
-        return ret
-
-    def commit(store):
-        store.sqllog.info("COMMIT")
-        store.conn.commit()
-        store.in_transaction = False
-
-    def rollback(store):
-        if store.module is None:
-            return
-        store.sqllog.info("ROLLBACK")
-        try:
-            store.conn.rollback()
-            store.in_transaction = False
-        except store.module.OperationalError, e:
-            store.log.warning("Reconnecting after rollback error: %s", e)
-            store.reconnect()
-
-    def close(store):
-        store.sqllog.info("CLOSE")
-        store.conn.close()
+    def get_default_chain(store):
+        store.log.debug("Falling back to default (Bitcoin) policy.")
+        return Chain.create(store.default_chain)
 
     def get_ddl(store, key):
         return store._ddl[key]
@@ -1001,6 +592,7 @@ LEFT JOIN block prev ON (b.prev_block_id = prev.block_id)""",
     NULL txin_scriptSig,
     NULL txin_sequence""") + """,
     prevout.txout_value txin_value,
+    prevout.txout_scriptPubKey txin_scriptPubKey,
     pubkey.pubkey_id,
     pubkey.pubkey_hash,
     pubkey.pubkey
@@ -1043,6 +635,7 @@ LEFT JOIN block prev ON (b.prev_block_id = prev.block_id)""",
         """
         Create the database schema.
         """
+        store.config = {}
         store.configure()
 
         for stmt in (
@@ -1060,16 +653,16 @@ store._ddl['configvar'],
 # A block of the type used by Bitcoin.
 """CREATE TABLE block (
     block_id      NUMERIC(14) NOT NULL PRIMARY KEY,
-    block_hash    BIT(256)    UNIQUE NOT NULL,
+    block_hash    BINARY(32)  UNIQUE NOT NULL,
     block_version NUMERIC(10),
-    block_hashMerkleRoot BIT(256),
+    block_hashMerkleRoot BINARY(32),
     block_nTime   NUMERIC(20),
     block_nBits   NUMERIC(10),
     block_nNonce  NUMERIC(10),
     block_height  NUMERIC(14) NULL,
     prev_block_id NUMERIC(14) NULL,
     search_block_id NUMERIC(14) NULL,
-    block_chain_work BIT(""" + str(WORK_BITS) + """),
+    block_chain_work BINARY(""" + str(WORK_BITS / 8) + """),
     block_value_in NUMERIC(30) NULL,
     block_value_out NUMERIC(30),
     block_total_satoshis NUMERIC(26) NULL,
@@ -1090,9 +683,10 @@ store._ddl['configvar'],
 """CREATE TABLE chain (
     chain_id    NUMERIC(10) NOT NULL PRIMARY KEY,
     chain_name  VARCHAR(100) UNIQUE NOT NULL,
-    chain_code3 CHAR(3)     NULL,
-    chain_address_version BIT VARYING(800) NOT NULL,
-    chain_magic BIT(32)     NULL,
+    chain_code3 VARCHAR(5)  NULL,
+    chain_address_version VARBINARY(100) NOT NULL,
+    chain_script_addr_vers VARBINARY(100) NULL,
+    chain_magic BINARY(4)     NULL,
     chain_policy VARCHAR(255) NOT NULL,
     chain_decimals NUMERIC(2) NULL,
     chain_last_block_id NUMERIC(14) NULL,
@@ -1120,7 +714,7 @@ store._ddl['configvar'],
 # An orphan block must remember its hashPrev.
 """CREATE TABLE orphan_block (
     block_id      NUMERIC(14) NOT NULL PRIMARY KEY,
-    block_hashPrev BIT(256)   NOT NULL,
+    block_hashPrev BINARY(32) NOT NULL,
     FOREIGN KEY (block_id) REFERENCES block (block_id)
 )""",
 """CREATE INDEX x_orphan_block_hashPrev ON orphan_block (block_hashPrev)""",
@@ -1137,7 +731,7 @@ store._ddl['configvar'],
 # A transaction of the type used by Bitcoin.
 """CREATE TABLE tx (
     tx_id         NUMERIC(26) NOT NULL PRIMARY KEY,
-    tx_hash       BIT(256)    UNIQUE NOT NULL,
+    tx_hash       BINARY(32)  UNIQUE NOT NULL,
     tx_version    NUMERIC(10),
     tx_lockTime   NUMERIC(10),
     tx_size       NUMERIC(10)
@@ -1161,9 +755,18 @@ store._ddl['configvar'],
 # Bitcoin or Testnet address.
 """CREATE TABLE pubkey (
     pubkey_id     NUMERIC(26) NOT NULL PRIMARY KEY,
-    pubkey_hash   BIT(160)    UNIQUE NOT NULL,
-    pubkey        BIT(520)    NULL
+    pubkey_hash   BINARY(20)  UNIQUE NOT NULL,
+    pubkey        VARBINARY(""" + str(MAX_PUBKEY) + """) NULL
 )""",
+
+"""CREATE TABLE multisig_pubkey (
+    multisig_id   NUMERIC(26) NOT NULL,
+    pubkey_id     NUMERIC(26) NOT NULL,
+    PRIMARY KEY (multisig_id, pubkey_id),
+    FOREIGN KEY (multisig_id) REFERENCES pubkey (pubkey_id),
+    FOREIGN KEY (pubkey_id) REFERENCES pubkey (pubkey_id)
+)""",
+"""CREATE INDEX x_multisig_pubkey_pubkey ON multisig_pubkey (pubkey_id)""",
 
 # A transaction out-point.
 """CREATE TABLE txout (
@@ -1171,7 +774,7 @@ store._ddl['configvar'],
     tx_id         NUMERIC(26) NOT NULL,
     txout_pos     NUMERIC(10) NOT NULL,
     txout_value   NUMERIC(30) NOT NULL,
-    txout_scriptPubKey BIT VARYING(""" + str(8 * MAX_SCRIPT) + """),
+    txout_scriptPubKey VARBINARY(""" + str(MAX_SCRIPT) + """),
     pubkey_id     NUMERIC(26),
     UNIQUE (tx_id, txout_pos),
     FOREIGN KEY (pubkey_id)
@@ -1185,7 +788,7 @@ store._ddl['configvar'],
     tx_id         NUMERIC(26) NOT NULL,
     txin_pos      NUMERIC(10) NOT NULL,
     txout_id      NUMERIC(26)""" + (""",
-    txin_scriptSig BIT VARYING(""" + str(8 * MAX_SCRIPT) + """),
+    txin_scriptSig VARBINARY(""" + str(MAX_SCRIPT) + """),
     txin_sequence NUMERIC(10)""" if store.keep_scriptsig else "") + """,
     UNIQUE (tx_id, txin_pos),
     FOREIGN KEY (tx_id)
@@ -1197,7 +800,7 @@ store._ddl['configvar'],
 # a.k.a. PREVOUT_N.
 """CREATE TABLE unlinked_txin (
     txin_id       NUMERIC(26) NOT NULL PRIMARY KEY,
-    txout_tx_hash BIT(256)    NOT NULL,
+    txout_tx_hash BINARY(32)  NOT NULL,
     txout_pos     NUMERIC(10) NOT NULL,
     FOREIGN KEY (txin_id) REFERENCES txin (txin_id)
 )""",
@@ -1226,7 +829,7 @@ store._ddl['txout_approx'],
 ):
             try:
                 store.ddl(stmt)
-            except:
+            except Exception:
                 store.log.error("Failed: %s", stmt)
                 raise
 
@@ -1240,8 +843,12 @@ store._ddl['txout_approx'],
         for conf in CHAIN_CONFIG:
             conf = conf.copy()
             conf["name"] = conf.pop("chain")
+            if 'policy' in conf:
+                policy = conf.pop('policy')
+            else:
+                policy = conf['name']
 
-            chain = Chain.create(policy=conf["name"], **conf)
+            chain = Chain.create(policy, **conf)
             store.insert_chain(chain)
 
         store.sql("""
@@ -1254,7 +861,7 @@ store._ddl['txout_approx'],
                 """CREATE TABLE abe_firstbits (
                     pubkey_id       NUMERIC(26) NOT NULL,
                     block_id        NUMERIC(14) NOT NULL,
-                    address_version BIT VARYING(80) NOT NULL,
+                    address_version VARBINARY(10) NOT NULL,
                     firstbits       VARCHAR(50) NOT NULL,
                     PRIMARY KEY (address_version, pubkey_id, block_id),
                     FOREIGN KEY (pubkey_id) REFERENCES pubkey (pubkey_id),
@@ -1277,11 +884,11 @@ store._ddl['txout_approx'],
         store.sql("""
             INSERT INTO chain (
                 chain_id, chain_magic, chain_name, chain_code3,
-                chain_address_version, chain_policy, chain_decimals
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                chain_address_version, chain_script_addr_vers, chain_policy, chain_decimals
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                   (chain.id, store.binin(chain.magic), chain.name,
-                   chain.code3, store.binin(chain.address_version),
-                   chain.name, chain.decimals))
+                   chain.code3, store.binin(chain.address_version), store.binin(chain.script_addr_vers),
+                   chain.policy, chain.decimals))
 
     def get_lock(store):
         if store.version_below('Abe26'):
@@ -1303,7 +910,7 @@ store._ddl['txout_approx'],
                 INSERT INTO configvar (configvar_name, configvar_value)
                 VALUES (?, ?)""",
                       ("upgrade-lock-" + letters, 'x'))
-        except:
+        except Exception:
             store.release_lock(conn)
             conn = None
 
@@ -1319,330 +926,18 @@ store._ddl['txout_approx'],
             conn.close()
 
     def version_below(store, vers):
-        sv = store.config['schema_version'].replace('Abe', '')
-        vers = vers.replace('Abe', '')
-        return float(sv) < float(vers)
+        try:
+            sv = float(store.config['schema_version'].replace(SCHEMA_TYPE, ''))
+        except ValueError:
+            return False
+        vers = float(vers.replace(SCHEMA_TYPE, ''))
+        return sv < vers
 
     def configure(store):
-        store.config = {}
-
-        store.configure_ddl_implicit_commit()
-        store.configure_create_table_epilogue()
-        store.configure_max_varchar()
-        store.configure_clob_type()
-        store.configure_binary_type()
-        store.configure_int_type()
-        store.configure_sequence_type()
-        store.configure_limit_style()
-
-    def configure_binary_type(store):
-        for val in (
-            ['str', 'bytearray', 'buffer', 'hex', 'pg-bytea', 'binary']
-            if store.args.binary_type is None else
-            [ store.args.binary_type ]):
-
-            store.config['binary_type'] = val
-            store._set_sql_flavour()
-            if store._test_binary_type():
-                store.log.info("binary_type=%s", val)
-                return
-        raise Exception(
-            "No known binary data representation works"
-            if store.args.binary_type is None else
-            "Binary type " + store.args.binary_type + " fails test")
-
-    def configure_int_type(store):
-        for val in (
-            ['int', 'decimal', 'str']
-            if store.args.int_type is None else
-            [ store.args.int_type ]):
-            store.config['int_type'] = val
-            store._set_sql_flavour()
-            if store._test_int_type():
-                store.log.info("int_type=%s", val)
-                return
-        raise Exception("No known large integer representation works")
-
-    def configure_sequence_type(store):
-        for val in ['oracle', 'postgres', 'nvf', 'db2', 'mysql', 'update']:
-            store.config['sequence_type'] = val
-            store._set_sql_flavour()
-            if store._test_sequence_type():
-                store.log.info("sequence_type=%s", val)
-                return
-        raise Exception("No known sequence type works")
-
-    def _drop_if_exists(store, otype, name):
-        try:
-            store.sql("DROP " + otype + " " + name)
-            store.commit()
-        except store.module.DatabaseError:
-            store.rollback()
-
-    def drop_table_if_exists(store, obj):
-        store._drop_if_exists("TABLE", obj)
-    def drop_view_if_exists(store, obj):
-        store._drop_if_exists("VIEW", obj)
-
-    def drop_sequence_if_exists(store, key):
-        try:
-            store.drop_sequence(key)
-        except store.module.DatabaseError:
-            store.rollback()
-
-    def drop_column_if_exists(store, table, column):
-        try:
-            store.ddl("ALTER TABLE " + table + " DROP COLUMN " + column)
-        except store.module.DatabaseError:
-            store.rollback()
-
-    def configure_ddl_implicit_commit(store):
-        if 'create_table_epilogue' not in store.config:
-            store.config['create_table_epilogue'] = ''
-        for val in ['true', 'false']:
-            store.config['ddl_implicit_commit'] = val
-            store._set_sql_flavour()
-            if store._test_ddl():
-                store.log.info("ddl_implicit_commit=%s", val)
-                return
-        raise Exception("Can not test for DDL implicit commit.")
-
-    def _test_ddl(store):
-        """Test whether DDL performs implicit commit."""
-
-        store.drop_table_if_exists("abe_test_1")
-        store.ddl(
-            "CREATE TABLE abe_test_1 ("
-            " abe_test_1_id NUMERIC(12) NOT NULL PRIMARY KEY,"
-            " foo VARCHAR(10))")
-        store.rollback()
-
-        try:
-            store.selectall("SELECT MAX(abe_test_1_id) FROM abe_test_1")
-            return True
-        except store.module.DatabaseError, e:
-            store.rollback()
-            return False
-        except Exception:
-            store.rollback()
-            return False
-        finally:
-            store.drop_table_if_exists("abe_test_1")
-
-    def configure_create_table_epilogue(store):
-        for val in ['', ' ENGINE=InnoDB']:
-            store.config['create_table_epilogue'] = val
-            store._set_sql_flavour()
-            if store._test_transaction():
-                store.log.info("create_table_epilogue='%s'", val)
-                return
-        raise Exception("Can not create a transactional table.")
-
-    def _test_transaction(store):
-        """Test whether CREATE TABLE needs ENGINE=InnoDB for rollback."""
-        store.drop_table_if_exists("abe_test_1")
-        try:
-            store.ddl(
-                "CREATE TABLE abe_test_1 (a NUMERIC(12))")
-            store.sql("INSERT INTO abe_test_1 (a) VALUES (4)")
-            store.commit()
-            store.sql("INSERT INTO abe_test_1 (a) VALUES (5)")
-            store.rollback()
-            data = [int(row[0]) for row in store.selectall(
-                    "SELECT a FROM abe_test_1")]
-            return data == [4]
-        except store.module.DatabaseError, e:
-            store.rollback()
-            return False
-        except Exception, e:
-            store.rollback()
-            return False
-        finally:
-            store.drop_table_if_exists("abe_test_1")
-
-    def configure_max_varchar(store):
-        """Find the maximum VARCHAR width, up to 0xffffffff"""
-        lo = 0
-        hi = 1 << 32
-        mid = hi - 1
-        store.config['max_varchar'] = str(mid)
-        store.drop_table_if_exists("abe_test_1")
-        while True:
-            store.drop_table_if_exists("abe_test_1")
-            try:
-                store.ddl("""CREATE TABLE abe_test_1
-                           (a VARCHAR(%d), b VARCHAR(%d))""" % (mid, mid))
-                store.sql("INSERT INTO abe_test_1 (a, b) VALUES ('x', 'y')")
-                row = store.selectrow("SELECT a, b FROM abe_test_1")
-                if [x for x in row] == ['x', 'y']:
-                    lo = mid
-                else:
-                    hi = mid
-            except store.module.DatabaseError, e:
-                store.rollback()
-                hi = mid
-            except Exception, e:
-                store.rollback()
-                hi = mid
-            if lo + 1 == hi:
-                store.config['max_varchar'] = str(lo)
-                store.log.info("max_varchar=%s", store.config['max_varchar'])
-                break
-            mid = (lo + hi) / 2
-        store.drop_table_if_exists("abe_test_1")
-
-    def configure_clob_type(store):
-        """Find the name of the CLOB type, if any."""
-        long_str = 'x' * 10000
-        store.drop_table_if_exists("abe_test_1")
-        for val in ['CLOB', 'LONGTEXT', 'TEXT', 'LONG']:
-            try:
-                store.ddl("CREATE TABLE abe_test_1 (a %s)" % (val,))
-                store.sql("INSERT INTO abe_test_1 (a) VALUES (?)",
-                          (store.binin(long_str),))
-                out = store.selectrow("SELECT a FROM abe_test_1")[0]
-                if store.binout(out) == long_str:
-                    store.config['clob_type'] = val
-                    store.log.info("clob_type=%s", val)
-                    return
-                else:
-                    store.log.debug("out=%s", repr(out))
-            except store.module.DatabaseError, e:
-                store.rollback()
-            except Exception, e:
-                try:
-                    store.rollback()
-                except:
-                    # Fetching a CLOB really messes up Easysoft ODBC Oracle.
-                    store.reconnect()
-            finally:
-                store.drop_table_if_exists("abe_test_1")
-        store.log.info("No native type found for CLOB.")
-        store.config['clob_type'] = NO_CLOB
-
-    def _test_binary_type(store):
-        store.drop_table_if_exists("abe_test_1")
-        try:
-            store.ddl(
-                "CREATE TABLE abe_test_1 (test_id NUMERIC(2) NOT NULL PRIMARY KEY,"
-                " test_bit BIT(256), test_varbit BIT VARYING(" + str(8 * MAX_SCRIPT) + "))")
-            val = str(''.join(map(chr, range(0, 256, 8))))
-            store.sql("INSERT INTO abe_test_1 (test_id, test_bit, test_varbit)"
-                      " VALUES (?, ?, ?)",
-                      (1, store.hashin(val), store.binin(val)))
-            (bit, vbit) = store.selectrow(
-                "SELECT test_bit, test_varbit FROM abe_test_1")
-            if store.hashout(bit) != val:
-                return False
-            if store.binout(vbit) != val:
-                return False
-            return True
-        except store.module.DatabaseError, e:
-            store.rollback()
-            return False
-        except Exception, e:
-            store.rollback()
-            return False
-        finally:
-            store.drop_table_if_exists("abe_test_1")
-
-    def _test_int_type(store):
-        store.drop_view_if_exists("abe_test_v1")
-        store.drop_table_if_exists("abe_test_1")
-        try:
-            store.ddl(
-                """CREATE TABLE abe_test_1 (test_id NUMERIC(2) NOT NULL PRIMARY KEY,
-                 txout_value NUMERIC(30), i2 NUMERIC(20))""")
-            store.ddl(
-                """CREATE VIEW abe_test_v1 AS SELECT test_id,
-                 txout_value txout_approx_value, txout_value i1, i2
-                 FROM abe_test_1""")
-            v1 = 2099999999999999
-            v2 = 1234567890
-            store.sql("INSERT INTO abe_test_1 (test_id, txout_value, i2)"
-                      " VALUES (?, ?, ?)",
-                      (1, store.intin(v1), v2))
-            store.commit()
-            prod, o1 = store.selectrow(
-                "SELECT txout_approx_value * i2, i1 FROM abe_test_v1")
-            prod = int(prod)
-            o1 = int(o1)
-            if prod < v1 * v2 * 1.0001 and prod > v1 * v2 * 0.9999 and o1 == v1:
-                v3 = 9226543405000000000L
-                store.sql("""INSERT INTO abe_test_1 (test_id, txout_value)
-                           VALUES (2, ?)""", (store.intin(v3),))
-                (v3o,) = store.selectrow("SELECT txout_value FROM abe_test_1"
-                                         " WHERE test_id = 2")
-                return abs(float(int(v3o)) / v3 - 1.0) < 0.0001
-            return False
-        except store.module.DatabaseError, e:
-            store.rollback()
-            return False
-        except Exception, e:
-            store.rollback()
-            return False
-        finally:
-            store.drop_view_if_exists("abe_test_v1")
-            store.drop_table_if_exists("abe_test_1")
-
-    def _test_sequence_type(store):
-        store.drop_table_if_exists("abe_test_1")
-        store.drop_sequence_if_exists("abe_test_1")
-
-        try:
-            store.ddl(
-                """CREATE TABLE abe_test_1 (
-                    abe_test_1_id NUMERIC(12) NOT NULL PRIMARY KEY,
-                    foo VARCHAR(10))""")
-            store.create_sequence('abe_test_1')
-            id1 = store.new_id('abe_test_1')
-            id2 = store.new_id('abe_test_1')
-            if int(id1) != int(id2):
-                return True
-            return False
-        except store.module.DatabaseError, e:
-            store.rollback()
-            return False
-        except Exception, e:
-            store.rollback()
-            return False
-        finally:
-            store.drop_table_if_exists("abe_test_1")
-            try:
-                store.drop_sequence("abe_test_1")
-            except store.module.DatabaseError:
-                store.rollback()
-
-    def configure_limit_style(store):
-        for val in ['native', 'emulated']:
-            store.config['limit_style'] = val
-            store._set_sql_flavour()
-            if store._test_limit_style():
-                store.log.info("limit_style=%s", val)
-                return
-        raise Exception("Can not emulate LIMIT.")
-
-    def _test_limit_style(store):
-        store.drop_table_if_exists("abe_test_1")
-        try:
-            store.ddl(
-                """CREATE TABLE abe_test_1 (
-                    abe_test_1_id NUMERIC(12) NOT NULL PRIMARY KEY)""")
-            for id in (2, 4, 6, 8):
-                store.sql("INSERT INTO abe_test_1 (abe_test_1_id) VALUES (?)",
-                          (id,))
-            rows = store.selectall(
-                """SELECT abe_test_1_id FROM abe_test_1 ORDER BY abe_test_1_id
-                    LIMIT 3""")
-            return [int(row[0]) for row in rows] == [2, 4, 6]
-        except store.module.DatabaseError, e:
-            store.rollback()
-            return False
-        except Exception, e:
-            store.rollback()
-            return False
-        finally:
-            store.drop_table_if_exists("abe_test_1")
+        config = store._sql.configure()
+        store.init_binfuncs()
+        for name in config.keys():
+            store.config['sql.' + name] = config[name]
 
     def save_config(store):
         store.config['schema_version'] = SCHEMA_VERSION
@@ -1652,7 +947,7 @@ store._ddl['txout_approx'],
     def save_configvar(store, name):
         store.sql("UPDATE configvar SET configvar_value = ?"
                   " WHERE configvar_name = ?", (store.config[name], name))
-        if store.cursor.rowcount == 0:
+        if store.rowcount() == 0:
             store.sql("INSERT INTO configvar (configvar_name, configvar_value)"
                       " VALUES (?, ?)", (name, store.config[name]))
 
@@ -1766,9 +1061,9 @@ store._ddl['txout_approx'],
                 all_txins_linked = False
             else:
                 if store.commit_bytes == 0:
-                    tx['tx_id'] = store.import_and_commit_tx(tx, pos == 0)
+                    tx['tx_id'] = store.import_and_commit_tx(tx, pos == 0, chain)
                 else:
-                    tx['tx_id'] = store.import_tx(tx, pos == 0)
+                    tx['tx_id'] = store.import_tx(tx, pos == 0, chain)
                 if tx.get('unlinked_count', 1) > 0:
                     all_txins_linked = False
 
@@ -1783,13 +1078,19 @@ store._ddl['txout_approx'],
         block_id = int(store.new_id("block"))
         b['block_id'] = block_id
 
-        # Verify Merkle root.
-        if b['hashMerkleRoot'] != util.merkle(tx_hash_array):
-            raise MerkleRootMismatch(b['hash'], tx_hash_array)
+        if chain is not None:
+            # Verify Merkle root.
+            if b['hashMerkleRoot'] != chain.merkle_root(tx_hash_array):
+                raise MerkleRootMismatch(b['hash'], tx_hash_array)
 
         # Look for the parent block.
         hashPrev = b['hashPrev']
-        is_genesis = hashPrev == GENESIS_HASH_PREV
+        if chain is None:
+            # XXX No longer used.
+            is_genesis = hashPrev == util.GENESIS_HASH_PREV
+        else:
+            is_genesis = hashPrev == chain.genesis_hash_prev
+
         (prev_block_id, prev_height, prev_work, prev_satoshis,
          prev_seconds, prev_ss, prev_total_ss, prev_nTime) = (
             (None, -1, 0, 0, 0, 0, 0, b['nTime'])
@@ -1848,7 +1149,7 @@ store._ddl['txout_approx'],
                  store.intin(b['total_ss']),
                  len(b['transactions']), b['search_block_id']))
 
-        except store.module.DatabaseError:
+        except store.dbmodule.DatabaseError:
 
             if store.commit_bytes == 0:
                 # Rollback won't undo any previous changes, since we
@@ -1946,7 +1247,9 @@ store._ddl['txout_approx'],
               JOIN txin ON (txin.tx_id = bt.tx_id)
               JOIN txout ON (txin.txout_id = txout.txout_id)
               JOIN block_tx obt ON (txout.tx_id = obt.tx_id)
+              JOIN block ob ON (obt.block_id = ob.block_id)
              WHERE bt.block_id = ?
+               AND ob.block_chain_work IS NOT NULL
              GROUP BY txin.txin_id""", (block_id,)):
             (txin_id, oblock_id) = row
             if store.is_descended_from(block_id, int(oblock_id)):
@@ -2173,7 +1476,288 @@ store._ddl['txout_approx'],
             if pair and pair[1] > ret[chain_id][1]:
                 ret[chain_id] = pair
 
-    def tx_find_id_and_value(store, tx, is_coinbase):
+    def _export_scriptPubKey(store, txout, chain, scriptPubKey):
+        """In txout, set script_type, address_version, binaddr, and for multisig, required_signatures."""
+
+        if scriptPubKey is None:
+            txout['script_type'] = None
+            txout['binaddr'] = None
+            return
+
+        script_type, data = chain.parse_txout_script(scriptPubKey)
+        txout['script_type'] = script_type
+        txout['address_version'] = chain.address_version
+
+        if script_type == Chain.SCRIPT_TYPE_PUBKEY:
+            txout['binaddr'] = chain.pubkey_hash(data)
+        elif script_type == Chain.SCRIPT_TYPE_ADDRESS:
+            txout['binaddr'] = data
+        elif script_type == Chain.SCRIPT_TYPE_P2SH:
+            txout['address_version'] = chain.script_addr_vers
+            txout['binaddr'] = data
+        elif script_type == Chain.SCRIPT_TYPE_MULTISIG:
+            txout['required_signatures'] = data['m']
+            txout['binaddr'] = chain.pubkey_hash(scriptPubKey)
+            txout['subbinaddr'] = [
+                chain.pubkey_hash(pubkey)
+                for pubkey in data['pubkeys']
+                ]
+        elif script_type == Chain.SCRIPT_TYPE_BURN:
+            txout['binaddr'] = NULL_PUBKEY_HASH
+        else:
+            txout['binaddr'] = None
+
+    def export_block(store, chain=None, block_hash=None, block_number=None):
+        """
+        Return a dict with the following:
+
+        * chain_candidates[]
+            * chain
+            * in_longest
+        * chain_satoshis
+        * chain_satoshi_seconds
+        * chain_work
+        * fees
+        * generated
+        * hash
+        * hashMerkleRoot
+        * hashPrev
+        * height
+        * nBits
+        * next_block_hashes
+        * nNonce
+        * nTime
+        * satoshis_destroyed
+        * satoshi_seconds
+        * transactions[]
+            * fees
+            * hash
+            * in[]
+                * address_version
+                * binaddr
+                * value
+            * out[]
+                * address_version
+                * binaddr
+                * value
+            * size
+        * value_out
+        * version
+
+        Additionally, for multisig inputs and outputs:
+
+        * subbinaddr[]
+        * required_signatures
+
+        Additionally, for proof-of-stake chains:
+
+        * is_proof_of_stake
+        * proof_of_stake_generated
+        """
+
+        if block_number is None and block_hash is None:
+            raise ValueError("export_block requires either block_hash or block_number")
+
+        where = []
+        bind = []
+
+        if chain is not None:
+            where.append('chain_id = ?')
+            bind.append(chain.id)
+
+        if block_hash is not None:
+            where.append('block_hash = ?')
+            bind.append(store.hashin_hex(block_hash))
+
+        if block_number is not None:
+            where.append('block_height = ? AND in_longest = 1')
+            bind.append(block_number)
+
+        sql = """
+            SELECT
+                chain_id,
+                in_longest,
+                block_id,
+                block_hash,
+                block_version,
+                block_hashMerkleRoot,
+                block_nTime,
+                block_nBits,
+                block_nNonce,
+                block_height,
+                prev_block_hash,
+                block_chain_work,
+                block_value_in,
+                block_value_out,
+                block_total_satoshis,
+                block_total_seconds,
+                block_satoshi_seconds,
+                block_total_ss,
+                block_ss_destroyed,
+                block_num_tx
+              FROM chain_summary
+             WHERE """ + ' AND '.join(where) + """
+             ORDER BY
+                in_longest DESC,
+                chain_id DESC"""
+        rows = store.selectall(sql, bind)
+
+        if len(rows) == 0:
+            return None
+
+        row = rows[0][2:]
+        def parse_cc(row):
+            chain_id, in_longest = row[:2]
+            return { "chain": store.get_chain_by_id(chain_id), "in_longest": in_longest }
+
+        # Absent the chain argument, default to highest chain_id, preferring to avoid side chains.
+        cc = map(parse_cc, rows)
+
+        # "chain" may be None, but "found_chain" will not.
+        found_chain = chain
+        if found_chain is None:
+            if len(cc) > 0:
+                found_chain = cc[0]['chain']
+            else:
+                # Should not normally get here.
+                found_chain = store.get_default_chain()
+
+        (block_id, block_hash, block_version, hashMerkleRoot,
+         nTime, nBits, nNonce, height,
+         prev_block_hash, block_chain_work, value_in, value_out,
+         satoshis, seconds, ss, total_ss, destroyed, num_tx) = (
+            row[0], store.hashout_hex(row[1]), row[2],
+            store.hashout_hex(row[3]), row[4], int(row[5]), row[6],
+            row[7], store.hashout_hex(row[8]),
+            store.binout_int(row[9]), int(row[10]), int(row[11]),
+            None if row[12] is None else int(row[12]),
+            None if row[13] is None else int(row[13]),
+            None if row[14] is None else int(row[14]),
+            None if row[15] is None else int(row[15]),
+            None if row[16] is None else int(row[16]),
+            int(row[17]),
+            )
+
+        next_hashes = [
+            store.hashout_hex(hash) for hash, il in
+            store.selectall("""
+            SELECT DISTINCT n.block_hash, cc.in_longest
+              FROM block_next bn
+              JOIN block n ON (bn.next_block_id = n.block_id)
+              JOIN chain_candidate cc ON (n.block_id = cc.block_id)
+             WHERE bn.block_id = ?
+             ORDER BY cc.in_longest DESC""",
+                            (block_id,)) ]
+
+        tx_ids = []
+        txs = {}
+        block_out = 0
+        block_in = 0
+
+        for row in store.selectall("""
+            SELECT tx_id, tx_hash, tx_size, txout_value, txout_scriptPubKey
+              FROM txout_detail
+             WHERE block_id = ?
+             ORDER BY tx_pos, txout_pos
+        """, (block_id,)):
+            tx_id, tx_hash, tx_size, txout_value, scriptPubKey = (
+                row[0], row[1], row[2], int(row[3]), store.binout(row[4]))
+            tx = txs.get(tx_id)
+            if tx is None:
+                tx_ids.append(tx_id)
+                txs[tx_id] = {
+                    "hash": store.hashout_hex(tx_hash),
+                    "total_out": 0,
+                    "total_in": 0,
+                    "out": [],
+                    "in": [],
+                    "size": int(tx_size),
+                    }
+                tx = txs[tx_id]
+            tx['total_out'] += txout_value
+            block_out += txout_value
+
+            txout = { 'value': txout_value }
+            store._export_scriptPubKey(txout, found_chain, scriptPubKey)
+            tx['out'].append(txout)
+
+        for row in store.selectall("""
+            SELECT tx_id, txin_value, txin_scriptPubKey
+              FROM txin_detail
+             WHERE block_id = ?
+             ORDER BY tx_pos, txin_pos
+        """, (block_id,)):
+            tx_id, txin_value, scriptPubKey = (
+                row[0], 0 if row[1] is None else int(row[1]),
+                store.binout(row[2]))
+            tx = txs.get(tx_id)
+            if tx is None:
+                # Strange, inputs but no outputs?
+                tx_ids.append(tx_id)
+                tx_hash, tx_size = store.selectrow("""
+                    SELECT tx_hash, tx_size FROM tx WHERE tx_id = ?""",
+                                           (tx_id,))
+                txs[tx_id] = {
+                    "hash": store.hashout_hex(tx_hash),
+                    "total_out": 0,
+                    "total_in": 0,
+                    "out": [],
+                    "in": [],
+                    "size": int(tx_size),
+                    }
+                tx = txs[tx_id]
+            tx['total_in'] += txin_value
+            block_in += txin_value
+
+            txin = { 'value': txin_value }
+            store._export_scriptPubKey(txin, found_chain, scriptPubKey)
+            tx['in'].append(txin)
+
+        generated = block_out - block_in
+        coinbase_tx = txs[tx_ids[0]]
+        coinbase_tx['fees'] = 0
+        block_fees = coinbase_tx['total_out'] - generated
+
+        b = {
+            'chain_candidates':      cc,
+            'chain_satoshis':        satoshis,
+            'chain_satoshi_seconds': total_ss,
+            'chain_work':            block_chain_work,
+            'fees':                  block_fees,
+            'generated':             generated,
+            'hash':                  block_hash,
+            'hashMerkleRoot':        hashMerkleRoot,
+            'hashPrev':              prev_block_hash,
+            'height':                height,
+            'nBits':                 nBits,
+            'next_block_hashes':     next_hashes,
+            'nNonce':                nNonce,
+            'nTime':                 nTime,
+            'satoshis_destroyed':    destroyed,
+            'satoshi_seconds':       ss,
+            'transactions':          [txs[tx_id] for tx_id in tx_ids],
+            'value_out':             block_out,
+            'version':               block_version,
+            }
+
+        is_stake_chain = chain is not None and chain.has_feature('nvc_proof_of_stake')
+        if is_stake_chain:
+            # Proof-of-stake display based loosely on CryptoManiac/novacoin and
+            # http://nvc.cryptocoinexplorer.com.
+            b['is_proof_of_stake'] = len(tx_ids) > 1 and coinbase_tx['total_out'] == 0
+
+        for tx_id in tx_ids[1:]:
+            tx = txs[tx_id]
+            tx['fees'] = tx['total_in'] - tx['total_out']
+
+        if is_stake_chain and b['is_proof_of_stake']:
+            b['proof_of_stake_generated'] = -txs[tx_ids[1]]['fees']
+            txs[tx_ids[1]]['fees'] = 0
+            b['fees'] += b['proof_of_stake_generated']
+
+        return b
+
+    def tx_find_id_and_value(store, tx, is_coinbase, check_only=False):
         row = store.selectrow("""
             SELECT tx.tx_id, SUM(txout.txout_value), SUM(
                        CASE WHEN txout.pubkey_id > 0 THEN txout.txout_value
@@ -2184,6 +1768,11 @@ store._ddl['txout_approx'],
              GROUP BY tx.tx_id""",
                               (store.hashin(tx['hash']),))
         if row:
+            if check_only:
+                 # Don't update tx, saves a statement when all we care is
+                 # whenever tx_id is in store
+                 return row[0]
+
             tx_id, value_out, undestroyed = row
             value_out = 0 if value_out is None else int(value_out)
             undestroyed = 0 if undestroyed is None else int(undestroyed)
@@ -2201,7 +1790,7 @@ store._ddl['txout_approx'],
 
         return None
 
-    def import_tx(store, tx, is_coinbase):
+    def import_tx(store, tx, is_coinbase, chain):
         tx_id = store.new_id("tx")
         dbhash = store.hashin(tx['hash'])
 
@@ -2222,7 +1811,7 @@ store._ddl['txout_approx'],
             tx['value_out'] += txout['value']
             txout_id = store.new_id("txout")
 
-            pubkey_id = store.script_to_pubkey_id(txout['scriptPubKey'])
+            pubkey_id = store.script_to_pubkey_id(chain, txout['scriptPubKey'])
             if pubkey_id is not None and pubkey_id <= 0:
                 tx['value_destroyed'] += txout['value']
 
@@ -2286,12 +1875,12 @@ store._ddl['txout_approx'],
         # requires them.
         return tx_id
 
-    def import_and_commit_tx(store, tx, is_coinbase):
+    def import_and_commit_tx(store, tx, is_coinbase, chain):
         try:
-            tx_id = store.import_tx(tx, is_coinbase)
+            tx_id = store.import_tx(tx, is_coinbase, chain)
             store.commit()
 
-        except store.module.DatabaseError:
+        except store.dbmodule.DatabaseError:
             store.rollback()
             # Violation of tx_hash uniqueness?
             tx_id = store.tx_find_id_and_value(tx, is_coinbase)
@@ -2302,7 +1891,7 @@ store._ddl['txout_approx'],
 
     def maybe_import_binary_tx(store, chain_name, binary_tx):
         if chain_name is None:
-            chain = Chain.create(None)  # default to BTC tx format
+            chain = store.get_default_chain()
         else:
             chain = store.get_chain_by_name(chain_name)
 
@@ -2315,15 +1904,15 @@ store._ddl['txout_approx'],
         if count == 0:
             tx = chain.parse_transaction(binary_tx)
             tx['hash'] = tx_hash
-            store.import_tx(tx, util.is_coinbase_tx(tx))
+            store.import_tx(tx, chain.is_coinbase_tx(tx), chain)
             store.imported_bytes(tx['size'])
 
-    def export_tx(store, tx_id=None, tx_hash=None, decimals=8, format="api"):
+    def export_tx(store, tx_id=None, tx_hash=None, decimals=8, format="api", chain=None):
         """Return a dict as seen by /rawtx or None if not found."""
 
         # TODO: merge _export_tx_detail with export_tx.
-        if format == 'detail':
-            return store._export_tx_detail(tx_hash)
+        if format == 'browser':
+            return store._export_tx_detail(tx_hash, chain=chain)
 
         tx = {}
         is_bin = format == "binary"
@@ -2424,12 +2013,17 @@ store._ddl['txout_approx'],
 
         return tx
 
-    def _export_tx_detail(store, tx_hash):
+    def _export_tx_detail(store, tx_hash, chain):
+        try:
+            dbhash = store.hashin_hex(tx_hash)
+        except TypeError:
+            raise MalformedHash()
+
         row = store.selectrow("""
             SELECT tx_id, tx_version, tx_lockTime, tx_size
               FROM tx
              WHERE tx_hash = ?
-        """, (store.hashin_hex(tx_hash),))
+        """, (dbhash,))
         if row is None:
             return None
 
@@ -2443,7 +2037,7 @@ store._ddl['txout_approx'],
 
         def parse_tx_cc(row):
             return {
-                'chain_name': row[0],
+                'chain': store.get_chain_by_id(row[0]),
                 'in_longest': int(row[1]),
                 'block_nTime': int(row[2]),
                 'block_height': None if row[3] is None else int(row[3]),
@@ -2452,27 +2046,37 @@ store._ddl['txout_approx'],
                 }
 
         tx['chain_candidates'] = map(parse_tx_cc, store.selectall("""
-            SELECT c.chain_name, cc.in_longest,
+            SELECT cc.chain_id, cc.in_longest,
                    b.block_nTime, b.block_height, b.block_hash,
                    block_tx.tx_pos
-              FROM chain c
-              JOIN chain_candidate cc ON (cc.chain_id = c.chain_id)
+              FROM chain_candidate cc
               JOIN block b ON (b.block_id = cc.block_id)
               JOIN block_tx ON (block_tx.block_id = b.block_id)
              WHERE block_tx.tx_id = ?
-             ORDER BY c.chain_id, cc.in_longest DESC, b.block_hash
+             ORDER BY cc.chain_id, cc.in_longest DESC, b.block_hash
         """, (tx_id,)))
 
+        if chain is None:
+            if len(tx['chain_candidates']) > 0:
+                chain = tx['chain_candidates'][0]['chain']
+            else:
+                chain = store.get_default_chain()
+
         def parse_row(row):
-            pos, script, value, o_hash, o_pos, binaddr = row
-            return {
+            pos, script, value, o_hash, o_pos = row[:5]
+            script = store.binout(script)
+            scriptPubKey = store.binout(row[5]) if len(row) >5 else script
+
+            ret = {
                 "pos": int(pos),
-                "binscript": store.binout(script),
+                "binscript": script,
                 "value": None if value is None else int(value),
                 "o_hash": store.hashout_hex(o_hash),
                 "o_pos": None if o_pos is None else int(o_pos),
-                "binaddr": store.binout(binaddr),
                 }
+            store._export_scriptPubKey(ret, chain, scriptPubKey)
+
+            return ret
 
         # XXX Unneeded outer join.
         tx['in'] = map(parse_row, store.selectall("""
@@ -2483,28 +2087,25 @@ store._ddl['txout_approx'],
                 txout.txout_value,
                 COALESCE(prevtx.tx_hash, u.txout_tx_hash),
                 COALESCE(txout.txout_pos, u.txout_pos),
-                pubkey.pubkey_hash
+                txout.txout_scriptPubKey
               FROM txin
               LEFT JOIN txout ON (txout.txout_id = txin.txout_id)
-              LEFT JOIN pubkey ON (pubkey.pubkey_id = txout.pubkey_id)
               LEFT JOIN tx prevtx ON (txout.tx_id = prevtx.tx_id)
               LEFT JOIN unlinked_txin u ON (u.txin_id = txin.txin_id)
              WHERE txin.tx_id = ?
              ORDER BY txin.txin_pos
         """, (tx_id,)))
 
-        # XXX Only two outer JOINs needed.
+        # XXX Only one outer join needed.
         tx['out'] = map(parse_row, store.selectall("""
             SELECT
                 txout.txout_pos,
                 txout.txout_scriptPubKey,
                 txout.txout_value,
                 nexttx.tx_hash,
-                txin.txin_pos,
-                pubkey.pubkey_hash
+                txin.txin_pos
               FROM txout
               LEFT JOIN txin ON (txin.txout_id = txout.txout_id)
-              LEFT JOIN pubkey ON (pubkey.pubkey_id = txout.pubkey_id)
               LEFT JOIN tx nexttx ON (txin.tx_id = nexttx.tx_id)
              WHERE txout.tx_id = ?
              ORDER BY txout.txout_pos
@@ -2522,6 +2123,170 @@ store._ddl['txout_approx'],
         tx['value_out'] = sum_values(tx['out'])
 
         return tx
+
+    def export_address_history(store, address, chain=None, max_rows=-1, types=frozenset(['direct', 'escrow'])):
+        version, binaddr = util.decode_check_address(address)
+        if binaddr is None:
+            raise MalformedAddress("Invalid address")
+
+        balance = {}
+        received = {}
+        sent = {}
+        counts = [0, 0]
+        chains = []
+
+        def adj_balance(txpoint):
+            chain = txpoint['chain']
+
+            if chain.id not in balance:
+                chains.append(chain)
+                balance[chain.id] = 0
+                received[chain.id] = 0
+                sent[chain.id] = 0
+
+            if txpoint['type'] == 'direct':
+                value = txpoint['value']
+                balance[chain.id] += value
+                if txpoint['is_out']:
+                    sent[chain.id] -= value
+                else:
+                    received[chain.id] += value
+                counts[txpoint['is_out']] += 1
+
+        dbhash = store.binin(binaddr)
+        txpoints = []
+
+        def parse_row(is_out, row_type, nTime, chain_id, height, blk_hash, tx_hash, pos, value, script=None):
+            chain = store.get_chain_by_id(chain_id)
+            txpoint = {
+                'type':     row_type,
+                'is_out':   int(is_out),
+                'nTime':    int(nTime),
+                'chain':    chain,
+                'height':   int(height),
+                'blk_hash': store.hashout_hex(blk_hash),
+                'tx_hash':  store.hashout_hex(tx_hash),
+                'pos':      int(pos),
+                'value':    int(value),
+                }
+            if script is not None:
+                store._export_scriptPubKey(txpoint, chain, store.binout(script))
+
+            return txpoint
+
+        def parse_direct_in(row):  return parse_row(True, 'direct', *row)
+        def parse_direct_out(row): return parse_row(False, 'direct', *row)
+        def parse_escrow_in(row):  return parse_row(True, 'escrow', *row)
+        def parse_escrow_out(row): return parse_row(False, 'escrow', *row)
+
+        def get_received(escrow):
+            return store.selectall("""
+                SELECT
+                    b.block_nTime,
+                    cc.chain_id,
+                    b.block_height,
+                    b.block_hash,
+                    tx.tx_hash,
+                    txin.txin_pos,
+                    -prevout.txout_value""" + (""",
+                    prevout.txout_scriptPubKey""" if escrow else "") + """
+                  FROM chain_candidate cc
+                  JOIN block b ON (b.block_id = cc.block_id)
+                  JOIN block_tx ON (block_tx.block_id = b.block_id)
+                  JOIN tx ON (tx.tx_id = block_tx.tx_id)
+                  JOIN txin ON (txin.tx_id = tx.tx_id)
+                  JOIN txout prevout ON (txin.txout_id = prevout.txout_id)""" + ("""
+                  JOIN multisig_pubkey mp ON (mp.multisig_id = prevout.pubkey_id)""" if escrow else "") + """
+                  JOIN pubkey ON (pubkey.pubkey_id = """ + ("mp" if escrow else "prevout") + """.pubkey_id)
+                 WHERE pubkey.pubkey_hash = ?
+                   AND cc.in_longest = 1""" + ("" if max_rows < 0 else """
+                 LIMIT ?"""),
+                          (dbhash,)
+                          if max_rows < 0 else
+                          (dbhash, max_rows + 1))
+
+        def get_sent(escrow):
+            return store.selectall("""
+                SELECT
+                    b.block_nTime,
+                    cc.chain_id,
+                    b.block_height,
+                    b.block_hash,
+                    tx.tx_hash,
+                    txout.txout_pos,
+                    txout.txout_value""" + (""",
+                    txout.txout_scriptPubKey""" if escrow else "") + """
+                  FROM chain_candidate cc
+                  JOIN block b ON (b.block_id = cc.block_id)
+                  JOIN block_tx ON (block_tx.block_id = b.block_id)
+                  JOIN tx ON (tx.tx_id = block_tx.tx_id)
+                  JOIN txout ON (txout.tx_id = tx.tx_id)""" + ("""
+                  JOIN multisig_pubkey mp ON (mp.multisig_id = txout.pubkey_id)""" if escrow else "") + """
+                  JOIN pubkey ON (pubkey.pubkey_id = """ + ("mp" if escrow else "txout") + """.pubkey_id)
+                 WHERE pubkey.pubkey_hash = ?
+                   AND cc.in_longest = 1""" + ("" if max_rows < 0 else """
+                 LIMIT ?"""),
+                          (dbhash, max_rows + 1)
+                          if max_rows >= 0 else
+                          (dbhash,))
+
+        if 'direct' in types:
+            in_rows = get_received(False)
+            if len(in_rows) > max_rows >= 0:
+                return None  # XXX Could still show address basic data.
+            txpoints += map(parse_direct_in, in_rows)
+
+            out_rows = get_sent(False)
+            if len(out_rows) > max_rows >= 0:
+                return None
+            txpoints += map(parse_direct_out, out_rows)
+
+        if 'escrow' in types:
+            in_rows = get_received(True)
+            if len(in_rows) > max_rows >= 0:
+                return None
+            txpoints += map(parse_escrow_in, in_rows)
+
+            out_rows = get_sent(True)
+            if len(out_rows) > max_rows >= 0:
+                return None
+            txpoints += map(parse_escrow_out, out_rows)
+
+        def cmp_txpoint(p1, p2):
+            return cmp(p1['nTime'], p2['nTime']) \
+                or cmp(p1['is_out'], p2['is_out']) \
+                or cmp(p1['height'], p2['height']) \
+                or cmp(p1['chain'].name, p2['chain'].name)
+
+        txpoints.sort(cmp_txpoint)
+
+        for txpoint in txpoints:
+            adj_balance(txpoint)
+
+        hist = {
+            'binaddr':  binaddr,
+            'version':  version,
+            'chains':   chains,
+            'txpoints': txpoints,
+            'balance':  balance,
+            'sent':     sent,
+            'received': received,
+            'counts':   counts
+            }
+
+        # Show P2SH address components, if known.
+        # XXX With some more work, we could find required_signatures.
+        for (subbinaddr,) in store.selectall("""
+            SELECT sub.pubkey_hash
+              FROM multisig_pubkey mp
+              JOIN pubkey top ON (mp.multisig_id = top.pubkey_id)
+              JOIN pubkey sub ON (mp.pubkey_id = sub.pubkey_id)
+             WHERE top.pubkey_hash = ?""", (dbhash,)):
+            if 'subbinaddr' not in hist:
+                hist['subbinaddr'] = []
+            hist['subbinaddr'].append(store.binout(subbinaddr))
+
+        return hist
 
     # Called to indicate that the given block has the correct magic
     # number and policy for the given chains.  Updates CHAIN_CANDIDATE
@@ -2579,7 +2344,7 @@ store._ddl['txout_approx'],
                 for block_id in to_connect:
                     store.connect_block(block_id, chain_id)
 
-            elif b['hashPrev'] == GENESIS_HASH_PREV:
+            elif b['hashPrev'] == store.get_chain_by_id(chain_id).genesis_hash_prev:
                 in_longest = 1  # Assume only one genesis block per chain.  XXX
             else:
                 in_longest = 0
@@ -2642,7 +2407,7 @@ store._ddl['txout_approx'],
                            b['block_id'], chain_id)
         else:
             if b['height'] == 0:
-                b['hashPrev'] = GENESIS_HASH_PREV
+                b['hashPrev'] = store.get_chain_by_id(chain_id).genesis_hash_prev
             else:
                 b['hashPrev'] = 'dummy'  # Fool adopt_orphans.
             store.offer_block_to_chains(b, frozenset([chain_id]))
@@ -2694,49 +2459,38 @@ store._ddl['txout_approx'],
                   (store.hashin(tx_hash), txout_pos))
         return (None, None) if row is None else (row[0], int(row[1]))
 
-    def script_to_pubkey_id(store, script):
-        """Extract address from transaction output script."""
-        if script == SCRIPT_NETWORK_FEE:
-            return PUBKEY_ID_NETWORK_FEE
-        match = SCRIPT_ADDRESS_RE.match(script)
-        if match:
-            return store.pubkey_hash_to_id(match.group(1))
-        match = SCRIPT_PUBKEY_RE.match(script)
-        if match:
-            return store.pubkey_to_id(match.group(1))
+    def script_to_pubkey_id(store, chain, script):
+        """Extract address and script type from transaction output script."""
+        script_type, data = chain.parse_txout_script(script)
 
-        # Not a standard Bitcoin script as of 2011-08-23.  Namecoin operation?
-        # Ignore leading pushes, pops, and nops so long as stack does not
-        # underflow and ends up empty.
-        opcodes = deserialize.opcodes
-        drops = (opcodes.OP_NOP, opcodes.OP_DROP, opcodes.OP_2DROP)
-        start = 0
-        sp = 0
-        for opcode, data, i in deserialize.script_GetOp(script):
-            if data is not None or \
-                    opcode == opcodes.OP_0 or \
-                    opcode == opcodes.OP_1NEGATE or \
-                    (opcode >= opcodes.OP_1 and opcode <= opcodes.OP_16):
-                sp += 1
-                continue
-            if opcode in drops:
-                to_drop = drops.index(opcode)
-                if sp < to_drop:
-                    break
-                sp -= to_drop
-                start = i
-                continue
-            if sp != 0 or start == 0:
-                break
-            return store.script_to_pubkey_id(script[start:])
+        if script_type in (Chain.SCRIPT_TYPE_ADDRESS, Chain.SCRIPT_TYPE_P2SH):
+            return store.pubkey_hash_to_id(data)
+
+        if script_type == Chain.SCRIPT_TYPE_PUBKEY:
+            return store.pubkey_to_id(chain, data)
+
+        if script_type == Chain.SCRIPT_TYPE_MULTISIG:
+            script_hash = chain.script_hash(script)
+            multisig_id = store._pubkey_id(script_hash, script)
+
+            if not store.selectrow("SELECT 1 FROM multisig_pubkey WHERE multisig_id = ?", (multisig_id,)):
+                for pubkey in set(data['pubkeys']):
+                    pubkey_id = store.pubkey_to_id(chain, pubkey)
+                    store.sql("""
+                        INSERT INTO multisig_pubkey (multisig_id, pubkey_id)
+                        VALUES (?, ?)""", (multisig_id, pubkey_id))
+            return multisig_id
+
+        if script_type == Chain.SCRIPT_TYPE_BURN:
+            return PUBKEY_ID_NETWORK_FEE
 
         return None
 
     def pubkey_hash_to_id(store, pubkey_hash):
         return store._pubkey_id(pubkey_hash, None)
 
-    def pubkey_to_id(store, pubkey):
-        pubkey_hash = util.pubkey_to_hash(pubkey)
+    def pubkey_to_id(store, chain, pubkey):
+        pubkey_hash = chain.pubkey_hash(pubkey)
         return store._pubkey_id(pubkey_hash, pubkey)
 
     def _pubkey_id(store, pubkey_hash, pubkey):
@@ -2748,6 +2502,10 @@ store._ddl['txout_approx'],
         if row:
             return row[0]
         pubkey_id = store.new_id("pubkey")
+
+        if pubkey is not None and len(pubkey) > MAX_PUBKEY:
+            pubkey = None
+
         store.sql("""
             INSERT INTO pubkey (pubkey_id, pubkey_hash, pubkey)
             VALUES (?, ?, ?)""",
@@ -2795,11 +2553,11 @@ store._ddl['txout_approx'],
         """
         chain_id = dircfg['chain_id']
         if chain_id is None:
-            store.log.debug("no chain_id")
+            store.log.error("no chain_id")
             return False
         chain = store.chains_by.id[chain_id]
 
-        conffile = dircfg['conf'] or chain.datadir_conf_file_name
+        conffile = dircfg.get('conf') or chain.datadir_conf_file_name
         conffile = os.path.join(dircfg['dirname'], conffile)
         try:
             conf = dict([line.strip().split("=", 1)
@@ -2808,7 +2566,7 @@ store._ddl['txout_approx'],
                          for line in open(conffile)
                          if line != "" and line[0] not in "#\r\n"])
         except Exception, e:
-            store.log.debug("failed to load %s: %s", conffile, e)
+            store.log.error("failed to load %s: %s", conffile, e)
             return False
 
         rpcuser     = conf.get("rpcuser", "")
@@ -2831,15 +2589,16 @@ store._ddl['txout_approx'],
             try:
                 return rpc("getblockhash", height)
             except util.JsonrpcException, e:
-                if e.code == -1:  # Block number out of range.
+                if e.code in (-1, -5, -8):
+                    # Block number out of range...
+                    #  -1 is legacy code (pre-10.0), generic error
+                    #  -8 (RPC_INVALID_PARAMETER) first seen in bitcoind 10.x
+                    #  -5 (RPC_NOT_FOUND): Been suggested in #bitcoin-dev as more appropriate
                     return None
                 raise
 
-        (max_height,) = store.selectrow("""
-            SELECT MAX(block_height)
-              FROM chain_candidate
-             WHERE chain_id = ?""", (chain.id,))
-        height = 0 if max_height is None else int(max_height) + 1
+        # Returns -1 on error, so we'll get 0 on empty chain
+        height = store.get_block_number(chain.id) + 1
 
         def get_tx(rpc_tx_hash):
             try:
@@ -2849,7 +2608,6 @@ store._ddl['txout_approx'],
                 if e.code != -5:  # -5: transaction not in index.
                     raise
                 if height != 0:
-                    store.log.debug("RPC service lacks full txindex")
                     return None
 
                 # The genesis transaction is unavailable.  This is
@@ -2857,34 +2615,25 @@ store._ddl['txout_approx'],
                 import genesis_tx
                 rpc_tx_hex = genesis_tx.get(rpc_tx_hash)
                 if rpc_tx_hex is None:
-                    store.log.debug("genesis transaction unavailable via RPC;"
+                    store.log.error("genesis transaction unavailable via RPC;"
                                     " see import-tx in abe.conf")
                     return None
 
             rpc_tx = rpc_tx_hex.decode('hex')
-            tx_hash = chain.transaction_hash(rpc_tx)
+            tx_hash = rpc_tx_hash.decode('hex')[::-1]
 
-            if tx_hash != rpc_tx_hash.decode('hex')[::-1]:
-                raise InvalidBlock('transaction hash mismatch')
+            computed_tx_hash = chain.transaction_hash(rpc_tx)
+            if tx_hash != computed_tx_hash:
+                #raise InvalidBlock('transaction hash mismatch')
+                store.log.debug('transaction hash mismatch: %r != %r', tx_hash, computed_tx_hash)
 
             tx = chain.parse_transaction(rpc_tx)
             tx['hash'] = tx_hash
             return tx
 
-        try:
+        def first_new_block(height, next_hash):
+            """Find the first new block."""
 
-            # Get block hash at height, and at the same time, test
-            # bitcoind connectivity.
-            try:
-                next_hash = get_blockhash(height)
-            except util.JsonrpcException, e:
-                raise
-            except Exception, e:
-                # Connectivity failure.
-                store.log.debug("RPC failed: %s", e)
-                return False
-
-            # Find the first new block.
             while height > 0:
                 hash = get_blockhash(height - 1)
 
@@ -2901,8 +2650,65 @@ store._ddl['txout_approx'],
                 next_hash = hash
                 height -= 1
 
+            return (height, next_hash)
+
+        def catch_up_mempool(height):
+            # imported tx cache, so we can avoid querying DB on each pass
+            imported_tx = set()
+            # Next height check time
+            height_chk = time.time() + 1
+
+            while store.rpc_load_mempool:
+                # Import the memory pool.
+                for rpc_tx_hash in rpc("getrawmempool"):
+                    if rpc_tx_hash in imported_tx: continue
+
+                    # Break loop if new block found
+                    if height_chk < time.time():
+                        rpc_hash = get_blockhash(height)
+                        if rpc_hash:
+                            return rpc_hash
+                        height_chk = time.time() + 1
+
+                    tx = get_tx(rpc_tx_hash)
+                    if tx is None:
+                        # NB: On new blocks, older mempool tx are often missing
+                        # This happens some other times too, just get over with
+                        store.log.info("tx %s gone from mempool" % rpc_tx_hash)
+                        continue
+
+                    # XXX Race condition in low isolation levels.
+                    tx_id = store.tx_find_id_and_value(tx, False, check_only=True)
+                    if tx_id is None:
+                        tx_id = store.import_tx(tx, False, chain)
+                        store.log.info("mempool tx %d", tx_id)
+                        store.imported_bytes(tx['size'])
+                    imported_tx.add(rpc_tx_hash)
+
+                store.log.info("mempool load completed, starting over...")
+                time.sleep(3)
+            return None
+
+        try:
+
+            # Get block hash at height, and at the same time, test
+            # bitcoind connectivity.
+            try:
+                next_hash = get_blockhash(height)
+            except util.JsonrpcException, e:
+                raise
+            except Exception, e:
+                # Connectivity failure.
+                store.log.error("RPC failed: %s", e)
+                return False
+
+            # Get the first new block (looking backward until hash match)
+            height, next_hash = first_new_block(height, next_hash)
+
             # Import new blocks.
             rpc_hash = next_hash or get_blockhash(height)
+            if rpc_hash is None:
+                rpc_hash = catch_up_mempool(height)
             while rpc_hash is not None:
                 hash = rpc_hash.decode('hex')[::-1]
 
@@ -2915,7 +2721,7 @@ store._ddl['txout_approx'],
                     prev_hash = \
                         rpc_block['previousblockhash'].decode('hex')[::-1] \
                         if 'previousblockhash' in rpc_block \
-                        else GENESIS_HASH_PREV
+                        else chain.genesis_hash_prev
 
                     block = {
                         'hash':     hash,
@@ -2941,6 +2747,7 @@ store._ddl['txout_approx'],
                         if tx is None:
                             tx = get_tx(rpc_tx_hash)
                             if tx is None:
+                                store.log.error("RPC service lacks full txindex")
                                 return False
 
                         block['transactions'].append(tx)
@@ -2950,26 +2757,20 @@ store._ddl['txout_approx'],
                     rpc_hash = rpc_block.get('nextblockhash')
 
                 height += 1
-
-            # Import the memory pool.
-            for rpc_tx_hash in rpc("getrawmempool"):
-                tx = get_tx(rpc_tx_hash)
-                if tx is None:
-                    return False
-
-                # XXX Race condition in low isolation levels.
-                tx_id = store.tx_find_id_and_value(tx, False)
-                if tx_id is None:
-                    tx_id = store.import_tx(tx, False)
-                    store.log.info("mempool tx %d", tx_id)
-                    store.imported_bytes(tx['size'])
+                if rpc_hash is None:
+                    rpc_hash = catch_up_mempool(height)
+                    # Also look backwards in case we end up on an orphan block.
+                    # NB: Call only when rpc_hash is not None, otherwise
+                    #     we'll override catch_up_mempool's behavior.
+                    if rpc_hash:
+                        height, rpc_hash = first_new_block(height, rpc_hash)
 
         except util.JsonrpcMethodNotFound, e:
-            store.log.debug("bitcoind %s not supported", e.method)
+            store.log.error("bitcoind %s not supported", e.method)
             return False
 
         except InvalidBlock, e:
-            store.log.debug("RPC data not understood: %s", e)
+            store.log.error("RPC data not understood: %s", e)
             return False
 
         return True
@@ -3003,7 +2804,7 @@ store._ddl['txout_approx'],
 
             try:
                 blkfile['stream'].map_file(file, 0)
-            except:
+            except Exception:
                 # mmap can fail on an empty file, but empty files are okay.
                 file.seek(0, os.SEEK_END)
                 if file.tell() == 0:
@@ -3035,7 +2836,7 @@ store._ddl['txout_approx'],
 
             try:
                 store.import_blkdat(dircfg, ds, blkfile['name'])
-            except:
+            except Exception:
                 store.log.warning("Exception at %d" % ds.read_cursor)
                 try_close_file(ds)
                 raise
@@ -3159,11 +2960,11 @@ store._ddl['txout_approx'],
                 b = chain.ds_parse_block(ds)
                 b["hash"] = hash
 
-                if (store.log.isEnabledFor(logging.DEBUG) and b["hashPrev"] == GENESIS_HASH_PREV):
+                if (store.log.isEnabledFor(logging.DEBUG) and b["hashPrev"] == chain.genesis_hash_prev):
                     try:
                         store.log.debug("Chain %d genesis tx: %s", chain.id,
                                         b['transactions'][0]['__data__'].encode('hex'))
-                    except:
+                    except Exception:
                         pass
 
                 store.import_block(b, chain = chain)
@@ -3198,7 +2999,7 @@ store._ddl['txout_approx'],
              WHERE datadir_id = ?""",
                   (dircfg['blkfile_number'], store.intin(offset),
                    dircfg['id']))
-        if store.cursor.rowcount == 0:
+        if store.rowcount() == 0:
             store.sql("""
                 INSERT INTO datadir (datadir_id, dirname, blkfile_number,
                     blkfile_offset, chain_id)
@@ -3222,12 +3023,14 @@ store._ddl['txout_approx'],
                 dircfg['blkfile_offset'] = offset
 
     def get_block_number(store, chain_id):
-        (height,) = store.selectrow("""
-            SELECT MAX(block_height)
+        row = store.selectrow("""
+            SELECT block_height
               FROM chain_candidate
              WHERE chain_id = ?
-               AND in_longest = 1""", (chain_id,))
-        return -1 if height is None else int(height)
+               AND in_longest = 1
+             ORDER BY block_height DESC
+             LIMIT 1""", (chain_id,))
+        return int(row[0]) if row else -1
 
     def get_target(store, chain_id):
         rows = store.selectall("""
